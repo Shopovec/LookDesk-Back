@@ -78,7 +78,7 @@ class DashboardController extends Controller
      ============================================================ */
      private function latestDocuments()
      {
-        return Document::with('category')
+        return Document::with('categories', 'functions')
         ->orderBy('id', 'desc')
         ->limit(10)
         ->get();
@@ -100,7 +100,7 @@ class DashboardController extends Controller
      ============================================================ */
      private function latestUsers()
      {
-        return User::orderBy('id', 'desc')
+        return User::orderBy('id', 'desc')->with('functions')
         ->limit(10)
         ->get();
     }
