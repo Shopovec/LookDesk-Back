@@ -1,0 +1,1248 @@
+openapi: 3.0.0
+info:
+  title: 'LookDesk API'
+  version: 1.0.0
+servers:
+  -
+    url: 'https://api.lookdesk.ai'
+    description: 'Production API'
+paths:
+  /api/admin/plans:
+    get:
+      tags:
+        - 'Admin Plans'
+      operationId: 4b58fcd6d13184c5bf03c38a882f8a8e
+      security:
+        -
+          sanctum: []
+    post:
+      tags:
+        - 'Admin Plans'
+      summary: 'Create plan with prices and features'
+      operationId: 74e431da7a2c9aea218a525ed2bff36a
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+            example:
+              code: starter
+              name: Starter
+              description: 'Perfect for small teams'
+              status: available
+              is_active: true
+              prices:
+                -
+                  period: monthly
+                  price: 30
+                  per_user: false
+                  trial_days: 30
+                -
+                  period: yearly
+                  price: 300
+                  per_user: false
+                  trial_days: 30
+              features:
+                -
+                  title: '30-days free trial'
+                  sort: 1
+                -
+                  title: 'Up to 5 users'
+                  sort: 2
+                -
+                  title: 'Live Chat'
+                  sort: 3
+      responses:
+        '201':
+          description: Created
+        '422':
+          description: 'Validation error'
+      security:
+        -
+          sanctum: []
+  '/api/admin/plans/{id}':
+    get:
+      tags:
+        - 'Admin Plans'
+      operationId: f89632d9fd37cb1716736560a98fa6b4
+      security:
+        -
+          sanctum: []
+    put:
+      tags:
+        - 'Admin Plans'
+      summary: 'Update plan with prices and features'
+      operationId: ea723497692bf628df359167405eec78
+      parameters:
+        -
+          name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+            example:
+              name: Starter
+              description: 'Perfect for small teams'
+              status: available
+              is_active: true
+              prices:
+                -
+                  id: 1
+                  period: monthly
+                  price: 35
+                  per_user: false
+                  trial_days: 14
+              features:
+                -
+                  id: 5
+                  title: 'Live Chat'
+                  sort: 1
+      responses:
+        '200':
+          description: Updated
+        '404':
+          description: 'Not found'
+      security:
+        -
+          sanctum: []
+    delete:
+      tags:
+        - 'Admin Plans'
+      operationId: 01e1d972c73e5b9491dc84936ed716e8
+      security:
+        -
+          sanctum: []
+  /api/auth/login:
+    post:
+      tags:
+        - Auth
+      summary: 'Login user'
+      operationId: dd51a484b7fa0f97c7680fdbde14cf5f
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              required:
+                - email
+                - password
+              properties:
+                email:
+                  type: string
+                password:
+                  type: string
+              type: object
+      responses:
+        '200':
+          description: Success
+        '401':
+          description: 'Invalid credentials'
+  /api/auth/register:
+    post:
+      tags:
+        - Auth
+      summary: 'Register user'
+      operationId: c7bb21a0d87049e161b8e4c9b0d909f2
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              required:
+                - name
+                - email
+                - password
+              properties:
+                name:
+                  type: string
+                email:
+                  type: string
+                password:
+                  type: string
+              type: object
+      responses:
+        '201':
+          description: 'User created'
+  /api/auth/me:
+    get:
+      tags:
+        - Auth
+      summary: 'Get current user'
+      operationId: b5de204f5e452ef51327c691aa99e77c
+      responses:
+        '200':
+          description: 'Current user'
+      security:
+        -
+          sanctum: []
+  /api/auth/logout:
+    post:
+      tags:
+        - Auth
+      summary: Logout
+      operationId: df9bdc6c7a6d9f20b983526b2ec0f698
+      responses:
+        '200':
+          description: 'Logged out'
+      security:
+        -
+          sanctum: []
+  /api/billing/subscription:
+    get:
+      tags:
+        - Billing
+      summary: 'Get current user subscription'
+      operationId: de186396f33048dbf960fc5d6900c65a
+      responses:
+        '200':
+          description: 'Subscription data'
+        '401':
+          description: Unauthorized
+      security:
+        -
+          sanctum: []
+  /api/billing/subscribe:
+    post:
+      tags:
+        - Billing
+      summary: 'Create Stripe subscription'
+      operationId: 5a8d8d87da2190bb603604ec497bf635
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {  }
+            example:
+              plan_price_id: 1
+              quantity: 1
+      responses:
+        '200':
+          description: 'Checkout URL returned'
+        '422':
+          description: 'Validation error'
+      security:
+        -
+          sanctum: []
+  /api/billing/change-plan:
+    put:
+      tags:
+        - Billing
+      summary: 'Change subscription plan'
+      operationId: e95b48f1cfe00b3a3cee470bc8f46cdd
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {  }
+            example:
+              plan_price_id: 2
+              quantity: 5
+      responses:
+        '200':
+          description: 'Plan change requested'
+        '400':
+          description: 'No active subscription'
+      security:
+        -
+          sanctum: []
+  /api/billing/cancel:
+    post:
+      tags:
+        - Billing
+      summary: 'Cancel subscription'
+      operationId: adb22729136ecd422b8450adf73a8331
+      responses:
+        '200':
+          description: Canceled
+        '400':
+          description: 'No subscription'
+      security:
+        -
+          sanctum: []
+  /api/categories:
+    get:
+      tags:
+        - Categories
+      summary: 'Get all categories (with translations)'
+      operationId: ac9c4d978ea4e5b72915ca9728e5b8b1
+      parameters:
+        -
+          name: lang
+          in: query
+          schema:
+            type: string
+        -
+          name: parent_id
+          in: query
+          schema:
+            type: integer
+            nullable: true
+      responses:
+        '200':
+          description: 'Categories list'
+      security:
+        -
+          sanctum: []
+    post:
+      tags:
+        - Categories
+      summary: 'Create new category'
+      operationId: cca49a87d9b0ebb9a98ad7c154b71737
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              required:
+                - translations
+              properties:
+                parent_id:
+                  type: integer
+                  nullable: true
+                sort_order:
+                  type: integer
+                translations:
+                  type: array
+                  items: { required: [lang, title], properties: { lang: { type: string }, title: { type: string }, description: { type: string, nullable: true } }, type: object }
+              type: object
+      responses:
+        '201':
+          description: Created
+      security:
+        -
+          sanctum: []
+  '/api/categories/{id}':
+    get:
+      tags:
+        - Categories
+      summary: 'Get category by ID'
+      operationId: 09767bb2e47dde77dd1e2591428b0ae1
+      parameters:
+        -
+          name: id
+          in: path
+          schema:
+            type: integer
+        -
+          name: lang
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: 'Category found'
+        '404':
+          description: 'Not found'
+      security:
+        -
+          sanctum: []
+    put:
+      tags:
+        - Categories
+      summary: 'Update category'
+      operationId: 7dcf71887e585de7f881e9eb98d86126
+      requestBody:
+        content:
+          application/json:
+            schema:
+              properties:
+                parent_id:
+                  type: integer
+                  nullable: true
+                sort_order:
+                  type: integer
+                translations:
+                  type: array
+                  items: { properties: { lang: { type: string }, title: { type: string }, description: { type: string, nullable: true } }, type: object }
+              type: object
+      responses:
+        '200':
+          description: Updated
+      security:
+        -
+          sanctum: []
+    delete:
+      tags:
+        - Categories
+      summary: 'Delete category'
+      operationId: 9b61b65823f4a21f182506b34ddf805c
+      responses:
+        '200':
+          description: Deleted
+      security:
+        -
+          sanctum: []
+  /api/documents:
+    get:
+      tags:
+        - Documents
+      summary: 'Get document list'
+      operationId: 0eeb1a024876b0279b451f715fb6ed7f
+      parameters:
+        -
+          name: lang
+          in: query
+          schema:
+            type: string
+        -
+          name: category_id
+          in: query
+          schema:
+            type: integer
+        -
+          name: search
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: 'Document list'
+      security:
+        -
+          sanctum: []
+    post:
+      tags:
+        - Documents
+      summary: 'Create document with translations (each with its own file)'
+      operationId: 01922b37e468863bea1b42f588c11978
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              properties:
+                category_id:
+                  type: integer
+                  example: 1
+                is_public:
+                  type: boolean
+                  example: true
+                file:
+                  description: 'Main document file (PDF/DOCX/Image)'
+                  type: string
+                  format: binary
+                'translations[0][lang]':
+                  type: string
+                  example: en
+                'translations[0][title]':
+                  type: string
+                  example: 'Contract EN'
+                'translations[0][file]':
+                  description: 'File for EN translation'
+                  type: string
+                  format: binary
+                'translations[1][lang]':
+                  type: string
+                  example: ru
+                'translations[1][title]':
+                  type: string
+                  example: 'Контракт RU'
+                'translations[1][file]':
+                  description: 'File for RU translation'
+                  type: string
+                  format: binary
+              type: object
+      responses:
+        '201':
+          description: Created
+      security:
+        -
+          sanctum: []
+  '/api/documents/{id}':
+    get:
+      tags:
+        - Documents
+      summary: 'Get document by ID'
+      operationId: c6cc59b0640a09a31ed2a7965f93d67b
+      parameters:
+        -
+          name: id
+          in: path
+          schema:
+            type: integer
+        -
+          name: lang
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: 'Document found'
+        '404':
+          description: 'Not found'
+      security:
+        -
+          sanctum: []
+    put:
+      tags:
+        - Documents
+      summary: 'Update document and translations'
+      operationId: ab4a342b912782e0fe834285390ff14c
+      parameters:
+        -
+          name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: false
+        content:
+          multipart/form-data:
+            schema:
+              properties:
+                category_id:
+                  type: integer
+                is_public:
+                  type: boolean
+                'translations[0][lang]':
+                  type: string
+                  example: en
+                'translations[0][title]':
+                  type: string
+                  example: 'Contract EN'
+                'translations[0][file]':
+                  description: 'File for EN translation'
+                  type: string
+                  format: binary
+                'translations[1][lang]':
+                  type: string
+                  example: ru
+                'translations[1][title]':
+                  type: string
+                  example: 'Контракт RU'
+                'translations[1][file]':
+                  description: 'File for RU translation'
+                  type: string
+                  format: binary
+              type: object
+      responses:
+        '200':
+          description: Updated
+      security:
+        -
+          sanctum: []
+    delete:
+      tags:
+        - Documents
+      summary: 'Delete document'
+      operationId: 6b128368bb7ca99054b61fa94cd12162
+      responses:
+        '200':
+          description: Deleted
+      security:
+        -
+          sanctum: []
+  '/api/documents/{id}/download':
+    get:
+      tags:
+        - Documents
+      summary: 'Download document file'
+      operationId: 82e9bca1bbc2236748b6450b0502a5f0
+      responses:
+        '200':
+          description: 'File downloaded'
+      security:
+        -
+          sanctum: []
+  '/api/documents/{id}/translations':
+    get:
+      tags:
+        - 'Document Translations'
+      summary: 'Get all translations for a document'
+      operationId: 203126df320b047fa481efe543973124
+      parameters:
+        -
+          name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: 'List of translations'
+        '404':
+          description: 'Document not found'
+      security:
+        -
+          sanctum: []
+    post:
+      tags:
+        - 'Document Translations'
+      summary: 'Create translation for a document'
+      operationId: ba54ae1164913b32843afeabf2698dd8
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              required:
+                - lang
+                - title
+              properties:
+                lang:
+                  type: string
+                title:
+                  type: string
+                description:
+                  type: string
+                  nullable: true
+              type: object
+      responses:
+        '201':
+          description: 'Translation created'
+        '404':
+          description: 'Document not found'
+      security:
+        -
+          sanctum: []
+  '/api/documents/{id}/translations/{lang}':
+    get:
+      tags:
+        - 'Document Translations'
+      summary: 'Get translation by language'
+      operationId: 6ed99b92b3270aa3b287eb80e9f124f0
+      parameters:
+        -
+          name: id
+          in: path
+          schema:
+            type: integer
+        -
+          name: lang
+          in: path
+          schema:
+            type: string
+      responses:
+        '200':
+          description: 'Translation found'
+        '404':
+          description: 'Not found'
+      security:
+        -
+          sanctum: []
+    put:
+      tags:
+        - 'Document Translations'
+      summary: 'Update translation of document'
+      operationId: 205cd01f4c134085fb4e45182ef340e1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              properties:
+                title:
+                  type: string
+                description:
+                  type: string
+                  nullable: true
+              type: object
+      responses:
+        '200':
+          description: Updated
+        '404':
+          description: 'Not found'
+      security:
+        -
+          sanctum: []
+    delete:
+      tags:
+        - 'Document Translations'
+      summary: 'Delete translation of document'
+      operationId: c0bb7732a15d3d954239d8c037be5c19
+      responses:
+        '200':
+          description: Deleted
+        '404':
+          description: 'Not found'
+      security:
+        -
+          sanctum: []
+  /api/enterprise-requests:
+    post:
+      tags:
+        - Enterprise
+      summary: 'Send enterprise request'
+      operationId: fcda5b140756c4b0fb1bd3f12cc7af45
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {  }
+            example:
+              name: 'John Doe'
+              email: john@company.com
+              employees_range: 101-200
+              requirements: 'Need SSO and custom integrations'
+      responses:
+        '200':
+          description: 'Request sent'
+        '422':
+          description: 'Validation error'
+  /api/admin/enterprise-requests:
+    get:
+      tags:
+        - 'Admin Enterprise'
+      summary: 'Get enterprise requests list'
+      operationId: 84eeedfa931911117aa816cadca7ce3e
+      parameters:
+        -
+          name: page
+          in: query
+          schema:
+            type: integer
+        -
+          name: per_page
+          in: query
+          schema:
+            type: integer
+            default: 20
+      responses:
+        '200':
+          description: 'Paginated list'
+        '403':
+          description: Forbidden
+      security:
+        -
+          sanctum: []
+  /api/ocr/scan:
+    post:
+      tags:
+        - OCR
+      summary: 'Run OCR for image or PDF'
+      operationId: 7ed7bf9a29eb4acdfc8b9c4e4c0273fb
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              required:
+                - file
+              properties:
+                file:
+                  type: string
+                  format: binary
+                lang:
+                  type: string
+                  example: eng
+                document_id:
+                  type: integer
+                  nullable: true
+              type: object
+      responses:
+        '200':
+          description: 'OCR result'
+        '400':
+          description: 'Bad request'
+      security:
+        -
+          sanctum: []
+  /api/ocr/history:
+    get:
+      tags:
+        - OCR
+      summary: 'Get OCR history of current user'
+      operationId: 23df486c962cbc16fa54ba746717dccf
+      responses:
+        '200':
+          description: 'User OCR history'
+      security:
+        -
+          sanctum: []
+  '/api/ocr/{id}':
+    get:
+      tags:
+        - OCR
+      summary: 'Get OCR scan by ID'
+      operationId: 2c4bc7fa286214e41432b03d51a4ec1f
+      responses:
+        '200':
+          description: 'OCR record'
+        '404':
+          description: 'Not found'
+      security:
+        -
+          sanctum: []
+    delete:
+      tags:
+        - OCR
+      summary: 'Delete OCR scan record'
+      operationId: 6f3bde5a8f8f676cce3bb4ca4f44817c
+      responses:
+        '200':
+          description: Deleted
+        '404':
+          description: 'Not found'
+      security:
+        -
+          sanctum: []
+  /api/plans:
+    get:
+      tags:
+        - Plans
+      summary: 'Get available plans'
+      operationId: 68b204e5906e1c5bd239842e172d8481
+      parameters:
+        -
+          name: period
+          in: query
+          description: 'Filter prices by period'
+          schema:
+            type: string
+            enum:
+              - monthly
+              - yearly
+      responses:
+        '200':
+          description: 'Plans list'
+  /api/roles:
+    get:
+      tags:
+        - Roles
+      summary: 'Get all roles'
+      operationId: ca86f0a206144dfbd695b749b4b28f9d
+      responses:
+        '200':
+          description: 'Roles list'
+      security:
+        -
+          sanctum: []
+    post:
+      tags:
+        - Roles
+      summary: 'Create new role'
+      operationId: 341b8b162b61267c7bd187500aea5bc4
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              required:
+                - name
+              properties:
+                name:
+                  type: string
+              type: object
+      responses:
+        '201':
+          description: 'Role created'
+      security:
+        -
+          sanctum: []
+  '/api/roles/{id}':
+    get:
+      tags:
+        - Roles
+      summary: 'Get role by ID'
+      operationId: 15c404caf238f1861c81f68205d328e5
+      parameters:
+        -
+          name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: 'Role details'
+        '404':
+          description: 'Not found'
+      security:
+        -
+          sanctum: []
+    put:
+      tags:
+        - Roles
+      summary: 'Update role'
+      operationId: c73ab816ae8fb7c34a995d37ba577082
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              properties:
+                name:
+                  type: string
+              type: object
+      responses:
+        '200':
+          description: Updated
+        '404':
+          description: 'Not found'
+      security:
+        -
+          sanctum: []
+    delete:
+      tags:
+        - Roles
+      summary: 'Delete role'
+      operationId: ffa6ef115d86b00cc6c54a6210019f9c
+      responses:
+        '200':
+          description: Deleted
+        '404':
+          description: 'Not found'
+      security:
+        -
+          sanctum: []
+  /api/users:
+    get:
+      tags:
+        - Users
+      summary: 'Get users list'
+      operationId: 566aed8efb436ca506e0ef51a032ecd9
+      parameters:
+        -
+          name: search
+          in: query
+          schema:
+            type: string
+        -
+          name: role_id
+          in: query
+          schema:
+            type: integer
+        -
+          name: page
+          in: query
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: 'List of users'
+      security:
+        -
+          sanctum: []
+    post:
+      tags:
+        - Users
+      summary: 'Create user'
+      operationId: be551c1d694a01c164966f58bfa77013
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              required:
+                - name
+                - email
+                - password
+                - role_id
+              properties:
+                name:
+                  type: string
+                email:
+                  type: string
+                password:
+                  type: string
+                role_id:
+                  type: integer
+              type: object
+      responses:
+        '201':
+          description: 'User created'
+      security:
+        -
+          sanctum: []
+  '/api/users/{id}':
+    get:
+      tags:
+        - Users
+      summary: 'Get user by ID'
+      operationId: 6f51bd5fa2dddcd25e44cfa53dcbd10a
+      parameters:
+        -
+          name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: 'User detail'
+        '404':
+          description: 'Not found'
+      security:
+        -
+          sanctum: []
+    put:
+      tags:
+        - Users
+      summary: 'Update user'
+      operationId: 070e37fc9aff78ae73860751bc990ed3
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              properties:
+                name:
+                  type: string
+                  nullable: true
+                email:
+                  type: string
+                  nullable: true
+                password:
+                  type: string
+                  nullable: true
+                role_id:
+                  type: integer
+                  nullable: true
+              type: object
+      responses:
+        '200':
+          description: Updated
+        '404':
+          description: 'Not found'
+      security:
+        -
+          sanctum: []
+    delete:
+      tags:
+        - Users
+      summary: 'Delete user'
+      operationId: 0b4133ed462528a5e648b88ead11e929
+      responses:
+        '200':
+          description: Deleted
+        '404':
+          description: 'Not found'
+      security:
+        -
+          sanctum: []
+  '/api/users/{id}/role':
+    post:
+      tags:
+        - Users
+      summary: 'Change user role'
+      operationId: 262009afef863a9f9dd96c0c848773ca
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              properties:
+                role_id:
+                  type: integer
+              type: object
+      responses:
+        '200':
+          description: 'Role changed'
+        '404':
+          description: 'Not found'
+      security:
+        -
+          sanctum: []
+components:
+  schemas:
+    User:
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        email:
+          type: string
+        role_id:
+          type: integer
+        role:
+          $ref: '#/components/schemas/Role'
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+      type: object
+    Role:
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+      type: object
+    Category:
+      properties:
+        id:
+          type: integer
+        title:
+          type: string
+        description:
+          type: string
+        parent_id:
+          type: integer
+          nullable: true
+        translations:
+          type: array
+          items:
+            $ref: '#/components/schemas/CategoryTranslation'
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+      type: object
+    CategoryTranslation:
+      properties:
+        id:
+          type: integer
+        category_id:
+          type: integer
+        lang:
+          type: string
+        title:
+          type: string
+        description:
+          type: string
+      type: object
+    Document:
+      properties:
+        id:
+          type: integer
+        title:
+          type: string
+        content:
+          type: string
+        category_id:
+          type: integer
+        file_path:
+          type: string
+        translations:
+          type: array
+          items:
+            $ref: '#/components/schemas/DocumentTranslation'
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+      type: object
+    DocumentTranslation:
+      properties:
+        id:
+          type: integer
+        document_id:
+          type: integer
+        lang:
+          type: string
+        title:
+          type: string
+        content:
+          type: string
+      type: object
+    OcrScan:
+      properties:
+        id:
+          type: integer
+        user_id:
+          type: integer
+        image_path:
+          type: string
+        extracted_text:
+          type: string
+        meta:
+          type: object
+          example:
+            lang: en
+            confidence: 0.97
+        created_at:
+          type: string
+          format: date-time
+      type: object
+    AuthResponse:
+      properties:
+        token:
+          type: string
+        user:
+          $ref: '#/components/schemas/User'
+      type: object
+    DashboardStatsItem:
+      properties:
+        date:
+          type: string
+          example: '2025-01-10'
+        count:
+          type: integer
+          example: 12
+      type: object
+    DashboardData:
+      properties:
+        documents_total:
+          type: integer
+        categories_total:
+          type: integer
+        translations_total:
+          type: integer
+        ocr_total:
+          type: integer
+        my_ocr_total:
+          type: integer
+        latest_documents:
+          type: array
+          items:
+            $ref: '#/components/schemas/Document'
+        latest_ocr:
+          type: array
+          items:
+            $ref: '#/components/schemas/OcrScan'
+        documents_per_day:
+          type: array
+          items:
+            $ref: '#/components/schemas/DashboardStatsItem'
+        categories_usage:
+          type: array
+          items:
+            $ref: '#/components/schemas/Category'
+      type: object
+  securitySchemes:
+    sanctum:
+      type: http
+      bearerFormat: JWT
+      scheme: bearer
+tags:
+  -
+    name: 'Admin Plans'
+    description: 'Admin Plans'
+  -
+    name: Auth
+    description: Auth
+  -
+    name: Billing
+    description: Billing
+  -
+    name: Categories
+    description: Categories
+  -
+    name: Documents
+    description: Documents
+  -
+    name: 'Document Translations'
+    description: 'Document Translations'
+  -
+    name: Enterprise
+    description: Enterprise
+  -
+    name: 'Admin Enterprise'
+    description: 'Admin Enterprise'
+  -
+    name: OCR
+    description: OCR
+  -
+    name: Plans
+    description: Plans
+  -
+    name: Roles
+    description: Roles
+  -
+    name: Users
+    description: Users

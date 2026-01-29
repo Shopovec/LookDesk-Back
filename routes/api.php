@@ -3,17 +3,35 @@
 use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\CategoryController;
+use App\Http\Controllers\Api\FunctionController;
 use App\Http\Controllers\Api\DocumentController;
 use App\Http\Controllers\Api\DocumentTranslationController;
 use App\Http\Controllers\Api\OcrController;
-use App\Http\Controllers\Api\SearchController;
 use App\Http\Controllers\Api\UserController;
 use App\Http\Controllers\Api\RoleController;
 use App\Http\Controllers\Api\DashboardController;
+use App\Http\Controllers\Api\BillingController;
+use App\Http\Controllers\Api\EnterpriseRequestController;
+use App\Http\Controllers\Api\PlanController;
+use App\Http\Controllers\Api\StripeWebhookController;
+use App\Http\Controllers\Api\AiChatController;
+use App\Http\Controllers\Api\EventController;
+
+
 
 Route::prefix('auth')->group(function () {
     Route::post('login',    [AuthController::class, 'login']);
     Route::post('register', [AuthController::class, 'register']);
+    Route::post('verify', [AuthController::class, 'verify']);
+
+});
+
+Route::middleware('auth:sanctum')->group(function () {
+    Route::post('ai/search', [AiChatController::class, 'search']);
+    Route::get('ai/sessions', [AiChatController::class, 'sessions']);
+    Route::get('ai/sessions/{id}', [AiChatController::class, 'showSession']);
+    Route::post('ai/sessions/{id}/message', [AiChatController::class, 'message']);
+    Route::post('ai/messages/{id}/feedback', [AiChatController::class, 'feedback']);
 });
 
 Route::middleware('auth:sanctum')->group(function () {
@@ -34,9 +52,14 @@ Route::middleware('auth:sanctum')->group(function () {
     // Roles
     Route::get('roles', [RoleController::class, 'index']);
 
+    // Events
+    Route::get('events', [EventController::class, 'index']);
+
     // Categories
     Route::apiResource('categories', CategoryController::class);
-
+    // Functions
+    Route::apiResource('functions', FunctionController::class);
+    
     // Documents
     Route::apiResource('documents', DocumentController::class);
 
@@ -49,7 +72,47 @@ Route::middleware('auth:sanctum')->group(function () {
     // OCR
     Route::post('ocr/scan', [OcrController::class, 'scan']);
     Route::get('ocr/list',  [OcrController::class, 'list']);
-
-    // Search
-    Route::get('search', [SearchController::class, 'search']);
 });
+
+Route::middleware('auth:sanctum')->prefix('admin')->group(function () {
+    Route::apiResource('plans', \App\Http\Controllers\Api\Admin\PlanController::class);
+});
+
+Route::post('/stripe/webhook', [
+    StripeWebhookController::class,
+    'webhook'
+]);
+
+Route::middleware('auth:sanctum')->group(function () {
+
+    Route::prefix('billing')->group(function () {
+
+        Route::get('/subscription', [BillingController::class, 'current']);
+
+        Route::post('/subscribe', [BillingController::class, 'subscribe']);
+
+        Route::put('/change-plan', [BillingController::class, 'changePlan']);
+
+        Route::post('/cancel', [BillingController::class, 'cancel']);
+
+    });
+
+});
+
+/* public */
+Route::post(
+    '/enterprise-requests',
+    [EnterpriseRequestController::class, 'store']
+);
+
+/* admin */
+Route::middleware('auth:sanctum')->prefix('admin')->group(function () {
+    Route::get(
+        '/enterprise-requests',
+        [EnterpriseRequestController::class, 'index']
+    );
+});
+
+Route::get('/plans', [PlanController::class, 'index']);
+
+

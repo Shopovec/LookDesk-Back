@@ -15,8 +15,12 @@ class User extends Authenticatable
         'email',
         'password',
         'role_id',
+        'client_creator_id',
         'avatar',
         'settings',
+        'stripe_customer_id',
+        'verification_code',
+        'is_verified'
     ];
 
     protected $casts = [
@@ -31,6 +35,21 @@ class User extends Authenticatable
     public function role()
     {
         return $this->belongsTo(Role::class);
+    }
+
+    public function hasRole($role)
+    {
+        return $this->role->name === $role;
+    }
+
+    public function functions()
+    {
+        return $this->belongsToMany(FunctionZ::class, 'user_function', 'user_id', 'function_id');
+    }
+
+    public function cliwntCreator()
+    {
+        return $this->belongsTo(User::class, 'client_creator_id');
     }
 
     // Permission helpers
@@ -53,4 +72,11 @@ class User extends Authenticatable
     {
         return true;
     }
+
+    public function subscription()
+    {
+        return $this->hasOne(\App\Models\Subscription::class);
+    }
+
+
 }

@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Models\Document;
 use App\Models\DocumentTranslation;
+use App\Models\Event;
 use App\Traits\ApiResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Storage;
@@ -34,6 +35,7 @@ class DocumentController extends Controller
      parameters: [
         new OA\Parameter(name: "lang", in: "query", schema: new OA\Schema(type: "string")),
         new OA\Parameter(name: "category_id", in: "query", schema: new OA\Schema(type: "integer")),
+        new OA\Parameter(name: "function_id", in: "query", schema: new OA\Schema(type: "integer")),
         new OA\Parameter(name: "search", in: "query", schema: new OA\Schema(type: "string"))
     ],
     responses: [
@@ -44,10 +46,25 @@ class DocumentController extends Controller
     {
         $lang = $request->get('lang', 'en');
 
-        $q = Document::query()->with(['translations', 'category']);
+        $q = Document::with(['translations','categories','functions']);
 
         if ($request->category_id) {
-            $q->where('category_id', $request->category_id);
+            $q->whereHas('categories', fn($x) =>
+                $x->where('categories.id', $request->category_id)
+            );
+        }
+
+        if ($request->function_id) {
+            $q->whereHas('functions', fn($x) =>
+                $x->where('functions.id', $request->function_id)
+            );
+        }
+
+        if ($request->search) {
+            $q->whereHas('translations', fn($x)=>
+                $x->where('title','like',"%{$request->search}%")
+                ->orWhere('content','like',"%{$request->search}%")
+            );
         }
 
         if ($request->search) {
@@ -78,20 +95,44 @@ class DocumentController extends Controller
             schema: new OA\Schema(
                 type: "object",
                 properties: [
-
-                    new OA\Property(
-                        property: "category_id",
-                        type: "integer",
-                        example: 1
-                    ),
-
                     new OA\Property(
                         property: "is_public",
                         type: "boolean",
                         example: true
                     ),
 
+                    new OA\Property(property: "only_view", type: "boolean"),
+                    new OA\Property(property: "confidential", type: "boolean"),
+                      /* ==========================================================
+                     * ARRAY: translations[0][lang], translations[0][file]
+                     * ========================================================== */
+
+                      new OA\Property(
+                        property: "categories[0][id]",
+                        type: "integer",
+                        example: "1"
+                    ),
+
+                      new OA\Property(
+                        property: "categories[1][id]",
+                        type: "integer",
+                        example: "1"
+                    ),
+
                     new OA\Property(
+                        property: "functions[0][id]",
+                        type: "integer",
+                        example: "1"
+                    ),
+
+
+                    new OA\Property(
+                        property: "functions[1][id]",
+                        type: "integer",
+                        example: "1"
+                    ),
+
+                      new OA\Property(
                         property: "file",
                         type: "string",
                         format: "binary",
@@ -115,6 +156,12 @@ class DocumentController extends Controller
                     ),
 
                     new OA\Property(
+                        property: "translations[0][description]",
+                        type: "string",
+                        example: "Контракт RU"
+                    ),
+
+                    new OA\Property(
                         property: "translations[0][file]",
                         type: "string",
                         format: "binary",
@@ -135,6 +182,12 @@ class DocumentController extends Controller
                     ),
 
                     new OA\Property(
+                        property: "translations[1][description]",
+                        type: "string",
+                        example: "Контракт RU"
+                    ),
+
+                    new OA\Property(
                         property: "translations[1][file]",
                         type: "string",
                         format: "binary",
@@ -144,37 +197,42 @@ class DocumentController extends Controller
                 ]
             )
         )
-    ),
-    responses: [
-        new OA\Response(response: 201, description: "Created")
-    ]
+),
+responses: [
+    new OA\Response(response: 201, description: "Created")
+]
 )]
 private function convertPdfToPng(string $pdfPath): ?string
 {
-    $output = $pdfPath . ".png";
+    $dir = storage_path('app/public/ocr2');
+
+    if (!is_dir($dir)) {
+        mkdir($dir, 0775, true);
+    }
+
+    $base = $dir . '/' . pathinfo($pdfPath, PATHINFO_FILENAME);
 
     $cmd = sprintf(
-        'convert -density 300 %s[0] -quality 100 %s 2>&1',
+        'pdftoppm -png -f 1 -l 1 %s %s 2>&1',
         escapeshellarg($pdfPath),
-        escapeshellarg($output)
+        escapeshellarg($base)
     );
 
-    $out = [];
-    $status = 0;
     exec($cmd, $out, $status);
 
-    if ($status !== 0) {
-        \Log::error('PDF convert failed', [
-            'cmd'    => $cmd,
+    $png = $base . '-1.png';
+
+    if (!file_exists($png)) {
+        \Log::error('pdftoppm failed', [
+            'cmd' => $cmd,
             'status' => $status,
             'output' => $out,
         ]);
         return null;
     }
 
-    return $output;
+    return $png;
 }
-
 private function mapLangForTesseract(string $lang): string
 {
     $lang = strtolower($lang);
@@ -219,62 +277,101 @@ public function store(Request $request)
     $this->checkOwnerAdmin();
 
     $request->validate([
-        'category_id'           => 'required|integer|exists:categories,id',
         'is_public'             => 'nullable|in:0,1,true,false,TRUE,FALSE,True,False',
+        'only_view'             => 'nullable|in:0,1,true,false,TRUE,FALSE,True,False',
+        'confidential'             => 'nullable|in:0,1,true,false,TRUE,FALSE,True,False',
+
+        'categories'          => 'required|array',
+        'categories.*.id'   => 'required|integer',
+        'functions'          => 'required|array',
+        'functions.*.id'   => 'required|integer',
+
 
         'translations'          => 'required|array',
         'translations.*.lang'   => 'required|string|in:en,ru,uk',
         'translations.*.title'  => 'required|string|max:255',
-        'translations.*.file'   => 'required|file|max:20480',
+        'translations.*.file' => 'nullable|file',
+        'translations.*.description' => 'nullable|string',
     ]);
 
+    $request->only_view = $request->only_view == 'true' ? 1 : 0;
+    $request->confidential = $request->confidential == 'true' ? 1 : 0;
+
+
+    $categories = collect($request->categories)->pluck('id')->toArray();
+    $functions  = collect($request->functions)->pluck('id')->toArray();
+
     $document = Document::create([
-        'category_id' => $request->category_id,
+        'only_view'   =>  $request->only_view ?? false,
+        'confidential'   =>  $request->confidential ?? false,
         'is_public'   => $request->is_public ?? false,
         'user_id'     => auth()->id(),
         'slug'        => Str::slug($request->translations[0]['title'] ?? Str::random(8)),
     ]);
 
+
+    $document->categories()->sync($categories ?? []);
+    $document->functions()->sync($functions ?? []);
+
+
     foreach ($request->translations as $t) {
 
-        // Save original
-        $path = $t['file']->store('ocr', 'public');
-        $fullPath = storage_path('app/public/' . $path);
+    // 1. Текст по умолчанию из description
+        $text = $t['description'] ?? null;
 
-        if (!file_exists($fullPath)) {
-            \Log::error('OCR file missing after store', ['path' => $fullPath]);
-            return $this->error("Failed to store file", 500);
+        $path = null;
+        $ext  = null;
+
+    // 2. Если передан файл — OCR
+        if (!empty($t['file'])) {
+
+            $path = $t['file']->store('ocr', 'public');
+            $fullPath = storage_path('app/public/' . $path);
+
+
+            if (!file_exists($fullPath)) {
+                \Log::error('OCR file missing', ['path' => $fullPath]);
+            continue; // не валим весь запрос
         }
 
-        // Detect extension
         $ext = strtolower($t['file']->getClientOriginalExtension());
-
-        // Convert PDF → PNG if needed
         $imagePath = $fullPath;
 
+        // 3. PDF → PNG
         if ($ext === 'pdf') {
             $imagePath = $this->convertPdfToPng($fullPath);
+
             if (!$imagePath) {
-                return $this->error("Unable to convert PDF to image", 500);
+                \Log::error('PDF convert failed', ['file' => $fullPath]);
+                continue;
             }
         }
 
         $ocrLang = $this->mapLangForTesseract($t['lang'] ?? 'en');
 
-        // Run OCR
+        // 4. OCR (может быть медленным)
         $text = $this->runTesseract($imagePath, $ocrLang);
+    }
 
-        DocumentTranslation::create([
-            'document_id' => $document->id,
-            'lang'        => $t['lang'],
-            'title'       => $t['title'],
-            'content'     => $text,
+    DocumentTranslation::create([
+        'document_id' => $document->id,
+        'lang'        => $t['lang'],
+        'title'       => $t['title'],
+        'content'     => $text,
             'file_path'   => $path,        // лучше сохранить относительный (из store)
             'file_type'   => $ext,
         ]);
-    }
+}
 
-    return $this->success($document->load('translations'), "Created", 201);
+
+        Event::create([
+            'user_id' => auth()->user()->id,
+            'action'  => 'created',
+            'model' => 'document',
+            'model_id' => $document->id,
+        ]);
+
+return $this->success($document->load('translations','categories','functions'), "Created", 201);
 }
 
      /* ======================================================
@@ -300,7 +397,7 @@ public function store(Request $request)
     {
         $lang = $request->get('lang', 'en');
 
-        $doc = Document::with(['translations', 'category'])->find($id);
+        $doc = Document::with(['translations', 'categories', 'functions'])->find($id);
 
         if (!$doc) return $this->error("Not found", 404);
 
@@ -375,11 +472,37 @@ public function store(Request $request)
                 type: "object",
                 properties: [
 
-                    new OA\Property(property: "category_id", type: "integer"),
                     new OA\Property(property: "is_public", type: "boolean"),
+                    new OA\Property(property: "only_view", type: "boolean"),
+                    new OA\Property(property: "confidential", type: "boolean"),
                       /* ==========================================================
                      * ARRAY: translations[0][lang], translations[0][file]
                      * ========================================================== */
+
+                      new OA\Property(
+                        property: "categories[0][id]",
+                        type: "integer",
+                        example: "1"
+                    ),
+
+                      new OA\Property(
+                        property: "categories[1][id]",
+                        type: "integer",
+                        example: "1"
+                    ),
+
+                      new OA\Property(
+                        property: "functions[0][id]",
+                        type: "integer",
+                        example: "1"
+                    ),
+
+
+                      new OA\Property(
+                        property: "functions[1][id]",
+                        type: "integer",
+                        example: "1"
+                    ),
 
                       new OA\Property(
                         property: "translations[0][lang]",
@@ -402,6 +525,13 @@ public function store(Request $request)
 
 
                       new OA\Property(
+                        property: "translations[0][description]",
+                        type: "string",
+                        example: "Контракт RU"
+                    ),
+
+
+                      new OA\Property(
                         property: "translations[1][lang]",
                         type: "string",
                         example: "ru"
@@ -409,6 +539,13 @@ public function store(Request $request)
 
                       new OA\Property(
                         property: "translations[1][title]",
+                        type: "string",
+                        example: "Контракт RU"
+                    ),
+
+
+                      new OA\Property(
+                        property: "translations[1][description]",
                         type: "string",
                         example: "Контракт RU"
                     ),
@@ -437,13 +574,21 @@ public function store(Request $request)
     if (!$doc) return $this->error("Not found", 404);
 
     $request->validate([
-        'category_id'     => 'nullable|integer|exists:categories,id',
         'is_public'       => 'nullable|in:0,1,true,false,TRUE,FALSE,True,False',
+
+        'only_view'             => 'nullable|in:0,1,true,false,TRUE,FALSE,True,False',
+        'confidential'             => 'nullable|in:0,1,true,false,TRUE,FALSE,True,False',
+
+        'categories'          => 'nullable|array',
+        'categories.*.id'   => 'required|integer',
+        'functions'          => 'nullable|array',
+        'functions.*.id'   => 'required|integer',
 
         'translations'              => 'nullable|array',
         'translations.*.lang'       => 'required_with:translations|string|in:en,ru,uk',
         'translations.*.title'      => 'required_with:translations|string|max:255',
-        'translations.*.file'       => 'nullable|file|max:20480', // файл может быть не передан
+        'translations.*.file' => 'nullable|file',
+        'translations.*.description' => 'nullable|string',
     ]);
 
     // ----------------------- UPDATE MAIN FILE -----------------------
@@ -459,52 +604,76 @@ public function store(Request $request)
         $doc->save();
     }
 
+    $request->only_view = $request->only_view == 'true' ? 1 : 0;
+    $request->confidential = $request->confidential == 'true' ? 1 : 0;
+
     // ----------------------- BASIC FIELDS -----------------------
     $doc->update([
-        'category_id' => $request->category_id ?? $doc->category_id,
-        'is_public'   => $request->is_public ?? $doc->is_public
+        'is_public'   => $request->is_public ?? $doc->is_public,
+        'only_view'   => $request->only_view ?? $doc->only_view,
+        'confidential'   => $request->confidential ?? $doc->confidential
     ]);
 
-     foreach ($request->translations as $t) {
+    $categories = collect($request->categories)->pluck('id')->toArray();
+    $functions  = collect($request->functions)->pluck('id')->toArray();
 
-        // Save original
-        $path = $t['file']->store('ocr', 'public');
-        $fullPath = storage_path('app/public/' . $path);
+    $doc->categories()->sync($categories ?? $doc->categories->pluck('id')->toArray());
+    $doc->functions()->sync($functions ?? $doc->functions->pluck('id')->toArray());
 
-        if (!file_exists($fullPath)) {
-            \Log::error('OCR file missing after store', ['path' => $fullPath]);
-            return $this->error("Failed to store file", 500);
+    foreach ($request->translations as $t) {
+
+    // 1. Текст по умолчанию из description
+        $text = $t['description'] ?? null;
+
+        $path = null;
+        $ext  = null;
+
+    // 2. Если передан файл — OCR
+        if (!empty($t['file'])) {
+
+            $path = $t['file']->store('ocr', 'public');
+            $fullPath = storage_path('app/public/' . $path);
+
+            if (!file_exists($fullPath)) {
+                \Log::error('OCR file missing', ['path' => $fullPath]);
+            continue; // не валим весь запрос
         }
 
-        // Detect extension
         $ext = strtolower($t['file']->getClientOriginalExtension());
-
-        // Convert PDF → PNG if needed
         $imagePath = $fullPath;
 
+        // 3. PDF → PNG
         if ($ext === 'pdf') {
             $imagePath = $this->convertPdfToPng($fullPath);
+
             if (!$imagePath) {
-                return $this->error("Unable to convert PDF to image", 500);
+                \Log::error('PDF convert failed', ['file' => $fullPath]);
+                continue;
             }
         }
 
         $ocrLang = $this->mapLangForTesseract($t['lang'] ?? 'en');
 
-        // Run OCR
+        // 4. OCR (может быть медленным)
         $text = $this->runTesseract($imagePath, $ocrLang);
-
-        DocumentTranslation::updateOrCreate(  ['document_id' => $doc->id, 'lang' => $t['lang']],[
-            'document_id' => $document->id,
-            'lang'        => $t['lang'],
-            'title'       => $t['title'],
-            'content'     => $text,
-            'file_path'   => $path,        // лучше сохранить относительный (из store)
-            'file_type'   => $ext,
-        ]);
     }
 
-    return $this->success($doc->load('translations'), "Updated");
+    // 5. Сохранение
+    DocumentTranslation::updateOrCreate(
+        [
+            'document_id' => $doc->id,
+            'lang'        => $t['lang']
+        ],
+        [
+            'title'     => $t['title'],
+            'content'   => $text,
+            'file_path' => $path,
+            'file_type' => $ext,
+        ]
+    );
+}
+
+return $this->success($doc->load('translations','categories','functions'), "Updated");
 }
 
 
@@ -528,6 +697,15 @@ public function store(Request $request)
         if (!$doc) return $this->error("Not found", 404);
 
         Storage::delete($doc->file_path);
+
+        Event::create([
+            'user_id' => auth()->user()->id,
+            'action'  => 'deleted',
+            'model' => 'document',
+            'model_id' => $doc->id,
+            'deleted_title' => $doc->translations()[0]->title
+        ]);
+
         $doc->translations()->delete();
         $doc->delete();
 

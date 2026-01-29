@@ -10,7 +10,6 @@ class Document extends Model
     use HasTranslations;
 
     protected $fillable = [
-        'category_id',
         'is_favorite',
         'is_archived',
         'file_path',
@@ -18,12 +17,16 @@ class Document extends Model
         'meta',
         'created_by',
         'updated_by',
+        'confidential',
+        'only_view'
     ];
 
     protected $casts = [
         'meta' => 'array',
         'is_favorite' => 'boolean',
         'is_archived' => 'boolean',
+        'confidential' => 'boolean',
+        'only_view' => 'boolean'
     ];
 
     public function translations()
@@ -31,9 +34,14 @@ class Document extends Model
         return $this->hasMany(DocumentTranslation::class);
     }
 
-    public function category()
+    public function categories()
     {
-        return $this->belongsTo(Category::class);
+        return $this->belongsToMany(Category::class, 'document_category', 'document_id', 'category_id');
+    }
+    
+    public function functions()
+    {
+        return $this->belongsToMany(FunctionZ::class, 'document_function', 'document_id', 'function_id');
     }
 
     public function creator()
@@ -60,5 +68,20 @@ class Document extends Model
     public function getSummary($lang = null)
     {
         return $this->translate('summary', $lang);
+    }
+
+    public function getTranslation($lang = null)
+    {
+        $tr = $this->translations
+        ->firstWhere('lang', $lang)
+        ?? $this->translations->first();
+
+        if (!$tr) return null;
+
+        return [
+            'lang' => $tr->lang,
+            'title' => $tr->title,
+            'description' => $tr->description,
+        ];
     }
 }

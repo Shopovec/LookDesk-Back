@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Models\Category;
 use App\Models\CategoryTranslation;
+use App\Models\Event;
 use App\Traits\ApiResponse;
 use Illuminate\Http\Request;
 use OpenApi\Attributes as OA;
@@ -35,11 +36,6 @@ class CategoryController extends Controller
                 name: "lang",
                 in: "query",
                 schema: new OA\Schema(type: "string")
-            ),
-            new OA\Parameter(
-                name: "parent_id",
-                in: "query",
-                schema: new OA\Schema(type: "integer", nullable: true)
             )
         ],
         responses: [
@@ -52,11 +48,7 @@ class CategoryController extends Controller
 
         $query = Category::query()->with(['translations']);
 
-        if ($request->has('parent_id')) {
-            $query->where('parent_id', $request->parent_id);
-        }
-
-        $items = $query->orderBy('sort_order')->get();
+        $items = $query->get();
 
         $items->transform(function ($cat) use ($lang) {
             $cat->translated = $cat->getTranslation($lang);
@@ -78,8 +70,6 @@ class CategoryController extends Controller
             required: true,
             content: new OA\JsonContent(
                 properties: [
-                    new OA\Property(property: "parent_id", type: "integer", nullable: true),
-                    new OA\Property(property: "sort_order", type: "integer"),
                     new OA\Property(property: "translations", type: "array", items:
                         new OA\Items(
                             properties: [
@@ -103,8 +93,6 @@ class CategoryController extends Controller
         $this->checkOwnerAdmin();
 
         $request->validate([
-            'parent_id' => 'nullable|integer|exists:categories,id',
-            'sort_order' => 'nullable|integer',
             'translations' => 'required|array',
             'translations.*.lang' => 'required|string',
             'translations.*.title' => 'required|string',
@@ -123,6 +111,13 @@ class CategoryController extends Controller
                 'description' => $t['description'] ?? null,
             ]);
         }
+
+        Event::create([
+            'user_id' => auth()->user()->id,
+            'action'  => 'created',
+            'model' => 'category',
+            'model_id' => $category->id,
+        ]);
 
         return $this->success($category->load('translations'), "Created", 201);
     }
@@ -175,8 +170,6 @@ class CategoryController extends Controller
         requestBody: new OA\RequestBody(
             content: new OA\JsonContent(
                 properties: [
-                    new OA\Property(property: "parent_id", type: "integer", nullable: true),
-                    new OA\Property(property: "sort_order", type: "integer"),
                     new OA\Property(property: "translations", type: "array", items:
                         new OA\Items(
                             properties: [
@@ -199,11 +192,6 @@ class CategoryController extends Controller
 
         $category = Category::find($id);
         if (!$category) return $this->error("Not found", 404);
-
-        $category->update([
-            'parent_id' => $request->parent_id ?? $category->parent_id,
-            'sort_order' => $request->sort_order ?? $category->sort_order,
-        ]);
 
         if ($request->translations) {
             foreach ($request->translations as $t) {
@@ -242,9 +230,13 @@ class CategoryController extends Controller
         $category = Category::find($id);
         if (!$category) return $this->error("Not found", 404);
 
-        if (Category::where('parent_id', $id)->exists()) {
-            return $this->error("Category has children", 409);
-        }
+        Event::create([
+            'user_id' => auth()->user()->id,
+            'action'  => 'deleted',
+            'model' => 'category',
+            'model_id' => $category->id,
+            'deleted_title' => $category->translations()[0]->title
+        ]);
 
         $category->translations()->delete();
         $category->delete();

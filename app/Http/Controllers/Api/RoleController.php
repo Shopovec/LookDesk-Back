@@ -31,8 +31,6 @@ class RoleController extends Controller
     )]
     public function index()
     {
-        $this->denyIfNoAdmin();
-
         $roles = Role::orderBy('id')->get();
 
         return $this->success($roles);

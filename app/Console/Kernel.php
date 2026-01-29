@@ -14,6 +14,7 @@ class Kernel extends ConsoleKernel
      */
     protected $commands = [
         \App\Console\Commands\GenerateSwagger::class,
+        \App\Console\Commands\BuildDocumentEmbeddings::class,
     ];
 
     /**

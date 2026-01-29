@@ -11,8 +11,6 @@ class CreateDocumentsTable extends Migration
         Schema::create('documents', function (Blueprint $table) {
             $table->id();
 
-            $table->foreignId('category_id')->nullable()->constrained('categories')->nullOnDelete();
-
             $table->boolean('is_favorite')->default(false);
             $table->boolean('is_archived')->default(false);
 

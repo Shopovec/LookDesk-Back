@@ -34,4 +34,19 @@ class Category extends Model
     {
         return $this->translate('description', $lang);
     }
+
+    public function getTranslation($lang = null)
+    {
+        $tr = $this->translations
+        ->firstWhere('lang', $lang)
+        ?? $this->translations->first();
+
+        if (!$tr) return null;
+
+        return [
+            'lang' => $tr->lang,
+            'title' => $tr->title,
+            'description' => $tr->description,
+        ];
+    }
 }
