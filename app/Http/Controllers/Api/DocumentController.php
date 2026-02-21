@@ -11,6 +11,8 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use OpenApi\Attributes as OA;
+use App\Models\DocumentEmbedding;
+use App\Services\OllamaClient;
 
 class DocumentController extends Controller
 {
@@ -119,14 +121,14 @@ class DocumentController extends Controller
                         example: "1"
                     ),
 
-                    new OA\Property(
+                      new OA\Property(
                         property: "functions[0][id]",
                         type: "integer",
                         example: "1"
                     ),
 
 
-                    new OA\Property(
+                      new OA\Property(
                         property: "functions[1][id]",
                         type: "integer",
                         example: "1"
@@ -197,20 +199,20 @@ class DocumentController extends Controller
                 ]
             )
         )
-),
-responses: [
-    new OA\Response(response: 201, description: "Created")
-]
+    ),
+    responses: [
+        new OA\Response(response: 201, description: "Created")
+    ]
 )]
 private function convertPdfToPng(string $pdfPath): ?string
 {
-    $dir = storage_path('app/public/ocr2');
+    $dir = storage_path('app/public/ocr');
 
     if (!is_dir($dir)) {
         mkdir($dir, 0775, true);
     }
 
-    $base = $dir . '/' . pathinfo($pdfPath, PATHINFO_FILENAME);
+    $base = $dir . '/' . uniqid('pdf_');
 
     $cmd = sprintf(
         'pdftoppm -png -f 1 -l 1 %s %s 2>&1',
@@ -220,18 +222,20 @@ private function convertPdfToPng(string $pdfPath): ?string
 
     exec($cmd, $out, $status);
 
-    $png = $base . '-1.png';
+    $files = glob($base . '-*.png');
 
-    if (!file_exists($png)) {
+    if (!$files || !file_exists($files[0])) {
         \Log::error('pdftoppm failed', [
             'cmd' => $cmd,
-            'status' => $status,
             'output' => $out,
+            'status' => $status,
         ]);
         return null;
     }
 
-    return $png;
+$imagePath = $files[0]; // первая страница
+
+return $imagePath;
 }
 private function mapLangForTesseract(string $lang): string
 {
@@ -353,6 +357,18 @@ public function store(Request $request)
         $text = $this->runTesseract($imagePath, $ocrLang);
     }
 
+
+    $text2 = trim(($t['title'] ?? '') . "\n" . ($text));
+
+    $ollama = OllamaClient::make();
+
+    $vec = $ollama->embed($text);
+
+    DocumentEmbedding::updateOrCreate(
+        ['document_id' => $document->id, 'lang' => $t['lang']],
+        ['embedding' => $vec]
+    );
+
     DocumentTranslation::create([
         'document_id' => $document->id,
         'lang'        => $t['lang'],
@@ -361,15 +377,18 @@ public function store(Request $request)
             'file_path'   => $path,        // лучше сохранить относительный (из store)
             'file_type'   => $ext,
         ]);
+
+
 }
 
 
-        Event::create([
-            'user_id' => auth()->user()->id,
-            'action'  => 'created',
-            'model' => 'document',
-            'model_id' => $document->id,
-        ]);
+
+Event::create([
+    'user_id' => auth()->user()->id,
+    'action'  => 'created',
+    'model' => 'document',
+    'model_id' => $document->id,
+]);
 
 return $this->success($document->load('translations','categories','functions'), "Created", 201);
 }

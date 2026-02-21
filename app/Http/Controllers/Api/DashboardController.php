@@ -14,6 +14,8 @@ use Illuminate\Http\Request;
 use OpenApi\Attributes as OA;
 use App\Models\ChatSession;
 use App\Models\ChatMessage;
+use App\Models\AiDocumentStat;
+use App\Models\Subscription;
 
 class DashboardController extends Controller
 {
@@ -64,6 +66,12 @@ class DashboardController extends Controller
             ->get(),
         ];
 
+        // 🔥 ТОЛЬКО ДЛЯ USER
+    if ($user->hasRole('user')) {
+                $data['billing'] = $this->aiEconomics($user);
+
+    }
+
         // ONLY admin/owner gets global users info
         if (in_array($user->role_id, [1,2])) {
             $data['users_total'] = User::count();
@@ -72,6 +80,61 @@ class DashboardController extends Controller
 
         return $this->success($data);
     }
+
+private function aiEconomics($user): array
+{
+    $subscription = $this->subscriptionCard($user);
+
+    $totalRevenue = Subscription::where('user_id', $user->id)
+        ->whereIn('status', ['active','canceled', 'trialing'])
+        ->join('plan_prices', 'subscriptions.plan_price_id', '=', 'plan_prices.id')
+        ->sum('plan_prices.price');
+
+    $aiAnswers = ChatMessage::where('role','assistant')
+        ->whereHas('session', fn($q)=>$q->where('user_id',$user->id))
+        ->count();
+
+    $aiCost = round($aiAnswers * config('ai.cost_per_answer', 0.002), 2);
+
+    $margin = $totalRevenue > 0
+        ? round((($totalRevenue - $aiCost) / $totalRevenue) * 100, 1)
+        : 0;
+
+    return [
+        'current_plan' => [
+            'name'   => $subscription['name'] ?? 'None',
+            'status' => $subscription['status'] ?? '',
+            'price'  => $subscription['price'] ?? 0,
+            'period' => $subscription['period'] ?? 0,
+        ],
+
+        'total_revenue' => round($totalRevenue, 2),
+        'total_ai_cost' => $aiCost,
+        'net_margin'    => $margin,
+    ];
+}
+
+private function subscriptionCard($user): array
+{
+    $subscription = $user->subscription()
+        ->with(['planPrice.plan'])
+        ->first();
+
+    if (!$subscription) {
+        return [
+            'name'   => 'Free',
+            'price'  => 0,
+            'status' => 'inactive'
+        ];
+    }
+
+    return [
+        'name'   => $subscription->planPrice->plan->name,
+        'price'  => $subscription->planPrice->price,
+        'period' => $subscription->planPrice->period ?? 'month',
+        'status' => $subscription->status
+    ];
+}
 
     /* ============================================================
      | LAST 10 DOCUMENTS

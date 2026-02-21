@@ -19,6 +19,7 @@ class CreateUsersTable extends Migration
             $table->foreignId('role_id')->default(4); // default user
 
             $table->string('avatar')->nullable();
+            $table->boolean('events_on')->default(0);
             $table->json('settings')->nullable();
 
             $table->timestamp('email_verified_at')->nullable();

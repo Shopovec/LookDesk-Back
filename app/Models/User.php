@@ -18,6 +18,7 @@ class User extends Authenticatable
         'client_creator_id',
         'avatar',
         'settings',
+        'events_on',
         'stripe_customer_id',
         'verification_code',
         'is_verified'

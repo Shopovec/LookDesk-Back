@@ -14,8 +14,6 @@ class OpenAIClient
                 'input' => $text,
             ])->json();
 
-            var_dump( $res);
-
         return $res['data'][0]['embedding'] ?? [];
     }
 

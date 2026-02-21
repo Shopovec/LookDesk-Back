@@ -16,8 +16,15 @@ use App\Http\Controllers\Api\PlanController;
 use App\Http\Controllers\Api\StripeWebhookController;
 use App\Http\Controllers\Api\AiChatController;
 use App\Http\Controllers\Api\EventController;
+use App\Http\Controllers\Api\SupportChatController;
+use App\Http\Controllers\Api\SocialAuthController;
 
 
+
+Route::prefix('auth/social')->group(function () {
+    Route::post('google', [SocialAuthController::class, 'google']);
+    Route::post('microsoft', [SocialAuthController::class, 'microsoft']);
+});
 
 Route::prefix('auth')->group(function () {
     Route::post('login',    [AuthController::class, 'login']);
@@ -36,6 +43,14 @@ Route::middleware('auth:sanctum')->group(function () {
 
 Route::middleware('auth:sanctum')->group(function () {
 
+    Route::prefix('support')->group(function () {
+        Route::get('chats', [SupportChatController::class,'index']);
+        Route::post('chats', [SupportChatController::class,'create']);
+        Route::get('chats/{id}', [SupportChatController::class,'show']);
+        Route::post('chats/{id}/message', [SupportChatController::class,'sendMessage']);
+        Route::post('chats/{id}/close', [SupportChatController::class,'close']);
+    });
+
     Route::get('auth/me',    [AuthController::class, 'me']);
     Route::post('auth/logout', [AuthController::class, 'logout']);
 
@@ -53,6 +68,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('roles', [RoleController::class, 'index']);
 
     // Events
+    Route::put('events/toggle', [EventController::class, 'toggle']);
     Route::get('events', [EventController::class, 'index']);
 
     // Categories
@@ -74,45 +90,45 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('ocr/list',  [OcrController::class, 'list']);
 });
 
-Route::middleware('auth:sanctum')->prefix('admin')->group(function () {
-    Route::apiResource('plans', \App\Http\Controllers\Api\Admin\PlanController::class);
-});
+    Route::middleware('auth:sanctum')->prefix('admin')->group(function () {
+        Route::apiResource('plans', \App\Http\Controllers\Api\Admin\PlanController::class);
+    });
 
-Route::post('/stripe/webhook', [
-    StripeWebhookController::class,
-    'webhook'
-]);
+    Route::post('/stripe/webhook', [
+        StripeWebhookController::class,
+        'webhook'
+    ]);
 
-Route::middleware('auth:sanctum')->group(function () {
+    Route::middleware('auth:sanctum')->group(function () {
 
-    Route::prefix('billing')->group(function () {
+        Route::prefix('billing')->group(function () {
 
-        Route::get('/subscription', [BillingController::class, 'current']);
+            Route::get('/subscription', [BillingController::class, 'current']);
 
-        Route::post('/subscribe', [BillingController::class, 'subscribe']);
+            Route::post('/subscribe', [BillingController::class, 'subscribe']);
 
-        Route::put('/change-plan', [BillingController::class, 'changePlan']);
+            Route::put('/change-plan', [BillingController::class, 'changePlan']);
 
-        Route::post('/cancel', [BillingController::class, 'cancel']);
+            Route::post('/cancel', [BillingController::class, 'cancel']);
+
+        });
 
     });
 
-});
-
-/* public */
-Route::post(
-    '/enterprise-requests',
-    [EnterpriseRequestController::class, 'store']
-);
-
-/* admin */
-Route::middleware('auth:sanctum')->prefix('admin')->group(function () {
-    Route::get(
+    /* public */
+    Route::post(
         '/enterprise-requests',
-        [EnterpriseRequestController::class, 'index']
+        [EnterpriseRequestController::class, 'store']
     );
-});
 
-Route::get('/plans', [PlanController::class, 'index']);
+    /* admin */
+    Route::middleware('auth:sanctum')->prefix('admin')->group(function () {
+        Route::get(
+            '/enterprise-requests',
+            [EnterpriseRequestController::class, 'index']
+        );
+    });
+
+    Route::get('/plans', [PlanController::class, 'index']);
 
 

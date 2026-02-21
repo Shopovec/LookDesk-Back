@@ -106,7 +106,7 @@ class AiChatController extends Controller
         $perPage = (int)($request->get('per_page', 20));
 
         $items = ChatSession::where('user_id', auth()->id())
-        ->with(['search_query'])
+        ->with(['search_query', 'messages.feedback'])
         ->orderByDesc('id')
         ->paginate($perPage);
 
