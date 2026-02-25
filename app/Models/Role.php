@@ -15,4 +15,9 @@ class Role extends Model
     {
         return $this->hasMany(User::class);
     }
+
+    public function features()
+    {
+        return $this->hasMany(RoleFeature::class)->orderBy('sort', 'ASC');
+    }
 }

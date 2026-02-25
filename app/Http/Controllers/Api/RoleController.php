@@ -31,7 +31,7 @@ class RoleController extends Controller
     )]
     public function index()
     {
-        $roles = Role::orderBy('id')->get();
+        $roles = Role::orderBy('id')->with('features')->where('name', '!=', 'superadmin')->get();
 
         return $this->success($roles);
     }
@@ -97,7 +97,7 @@ class RoleController extends Controller
     {
         $this->denyIfNoAdmin();
 
-        $role = Role::find($id);
+        $role = Role::with('features')->find($id);
         if (!$role) return $this->error("Not found", 404);
 
         return $this->success($role);

@@ -18,8 +18,9 @@ use App\Http\Controllers\Api\AiChatController;
 use App\Http\Controllers\Api\EventController;
 use App\Http\Controllers\Api\SupportChatController;
 use App\Http\Controllers\Api\SocialAuthController;
+use App\Http\Controllers\Api\SupportController;
 
-
+Route::post('support/contact', [SupportController::class, 'contact']);
 
 Route::prefix('auth/social')->group(function () {
     Route::post('google', [SocialAuthController::class, 'google']);
@@ -64,10 +65,14 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::put('users/{id}',  [UserController::class, 'update']);
     Route::delete('users/{id}', [UserController::class, 'destroy']);
 
+    Route::put('users/{id}/assignFunctions', [UserController::class, 'assignFunctions']);
+    Route::delete('users/{id}/removeFunctions', [UserController::class, 'removeFunctions']);
+
     // Roles
     Route::get('roles', [RoleController::class, 'index']);
 
     // Events
+    Route::delete('events/clear', [EventController::class, 'clear']);
     Route::put('events/toggle', [EventController::class, 'toggle']);
     Route::get('events', [EventController::class, 'index']);
 

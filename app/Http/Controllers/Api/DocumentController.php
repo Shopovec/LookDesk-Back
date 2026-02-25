@@ -13,6 +13,8 @@ use Illuminate\Support\Str;
 use OpenApi\Attributes as OA;
 use App\Models\DocumentEmbedding;
 use App\Services\OllamaClient;
+use App\Models\DocumentView;
+use App\Models\ChatMessage;
 
 class DocumentController extends Controller
 {
@@ -69,18 +71,30 @@ class DocumentController extends Controller
             );
         }
 
-        if ($request->search) {
-            $q->whereHas('translations', function ($qq) use ($request) {
-                $qq->where('title', 'like', "%{$request->search}%");
-            });
-        }
-
         $items = $q->orderBy('id', 'desc')->get();
 
         $items->transform(function ($doc) use ($lang) {
-            $doc->translated = $doc->getTranslation($lang);
-            return $doc;
-        });
+
+             DocumentView::create([
+        'document_id' => $doc->id,
+        'user_id' => auth()->id()
+    ]);
+
+    $doc->translated = $doc->getTranslation($lang);
+
+    $doc->views_last_30_days = $doc->views()
+        ->where('created_at','>=',now()->subDays(30))
+        ->count();
+
+
+
+    $doc->ai_searches_last_30_days = ChatMessage::where('role','user')
+        ->where('created_at','>=',now()->subDays(30))
+        ->where('content','like','%'.$doc->translated['title'].'%')
+        ->count();
+
+    return $doc;
+});
 
         return $this->success($items);
     }
@@ -309,7 +323,7 @@ public function store(Request $request)
         'only_view'   =>  $request->only_view ?? false,
         'confidential'   =>  $request->confidential ?? false,
         'is_public'   => $request->is_public ?? false,
-        'user_id'     => auth()->id(),
+        'created_by'     => auth()->id(),
         'slug'        => Str::slug($request->translations[0]['title'] ?? Str::random(8)),
     ]);
 
@@ -421,6 +435,11 @@ return $this->success($document->load('translations','categories','functions'), 
         if (!$doc) return $this->error("Not found", 404);
 
         $doc->translated = $doc->getTranslation($lang);
+
+         DocumentView::create([
+        'document_id' => $doc->id,
+        'user_id' => auth()->id()
+    ]);
 
         return $this->success($doc);
     }

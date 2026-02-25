@@ -30,11 +30,11 @@ class EventController extends Controller
     public function index(Request $request)
     {
 
-        $query = Event::query()->orderBy('created_at', 'DESC')->paginate(20);
+        $query = Event::query()->orderBy('created_at', 'DESC')->where('user_id', auth()->user()->id)->paginate(20);
 
         $query->transform(function ($event) {
-            $event->title = $event->getTitle();
-            $event->description = $event->getLabel();
+            $event->title = $event->getTitle() ?? '';
+            $event->description = $event->getLabel() ?? '';
             return $event;
         });
         return $this->success($query);
@@ -121,5 +121,38 @@ class EventController extends Controller
         return $this->success([
             'events_on' => (bool) $user->events_on,
         ]);
+    }
+
+/* ============================================================
+     | CLEAR EVENTS FOR CURRENT USER
+     ============================================================ */
+    #[OA\Delete(
+        path: "/api/events/clear",
+        summary: "Clear (delete) events for current user",
+        tags: ["Events"],
+        security: [["sanctum" => []]],
+        responses: [
+            new OA\Response(
+                response: 200,
+                description: "Events cleared",
+                content: new OA\JsonContent(
+                    type: "object",
+                    properties: [
+                        new OA\Property(property: "success", type: "boolean", example: true),
+                    ]
+                )
+            ),
+            new OA\Response(response: 401, description: "Unauthenticated")
+        ]
+    )]
+    public function clear(Request $request)
+    {
+        $user = $request->user();
+
+        Event::query()
+            ->where('user_id', $user->id)
+            ->delete();
+
+        return $this->success();
     }
 }

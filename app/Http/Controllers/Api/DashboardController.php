@@ -43,9 +43,25 @@ class DashboardController extends Controller
     {
         $user = auth()->user();
 
-        // base response for any role
+        $from = now()->subDays(30);
+
         $data = [
-            'documents_total'       => Document::count(),
+            'csat_last_30_days' => $this->csatOverall(),
+            'deleted_users_last_30_days' =>  $this->trashedUsersLast30Days(),
+            'total_revenue_last_30_days'  => $this->aiEconomics(),
+
+        // ✅ total documents
+            'documents_total' => Document::count(),
+            'documents_total_last_30_days' => Document::where('created_at', '>=', $from)->count(),
+
+        // ✅ активные юзеры за 30 дней (кто имел хотя бы 1 chat session)
+            'active_users_last_30_days' => $this->activeUsersLast30Days(),
+
+        // ✅ searches today (кол-во user-сообщений в чатах за сегодня)
+            'searches_today' => $this->searchesToday(),
+
+        // остальное как было
+            'most_viewed_document' => $this->mostViewedDocument(),
             'categories_total'      => Category::count(),
             'translations_total'    => DocumentTranslation::count(),
             'ocr_total'             => OcrScan::count(),
@@ -54,25 +70,23 @@ class DashboardController extends Controller
             'latest_ocr'            => $this->latestOcr($user),
             'documents_per_day'     => $this->documentsGraph(),
             'categories_usage'      => $this->categoriesUsage(),
-            // 📈 чаты сегодня
+
+        // 📈 чаты сегодня (сессии)
             'ai_sessions_today' => ChatSession::whereDate('created_at', today())->count(),
 
-    // ⭐ топ запросов (частота)
+        // ⭐ топ запросов
             'top_ai_queries' => ChatMessage::selectRaw('content, COUNT(*) as total')
-            ->where('role','user')
+            ->where('role', 'user')
             ->groupBy('content')
             ->orderByDesc('total')
             ->limit(5)
             ->get(),
         ];
 
-        // 🔥 ТОЛЬКО ДЛЯ USER
-    if ($user->hasRole('user')) {
-                $data['billing'] = $this->aiEconomics($user);
+        if ($user->hasRole('user')) {
+            $data['billing'] = $this->aiEconomics($user);
+        }
 
-    }
-
-        // ONLY admin/owner gets global users info
         if (in_array($user->role_id, [1,2])) {
             $data['users_total'] = User::count();
             $data['latest_users'] = $this->latestUsers();
@@ -81,60 +95,168 @@ class DashboardController extends Controller
         return $this->success($data);
     }
 
-private function aiEconomics($user): array
-{
-    $subscription = $this->subscriptionCard($user);
 
-    $totalRevenue = Subscription::where('user_id', $user->id)
-        ->whereIn('status', ['active','canceled', 'trialing'])
-        ->join('plan_prices', 'subscriptions.plan_price_id', '=', 'plan_prices.id')
-        ->sum('plan_prices.price');
+    private function activeUsersLast30Days(): int
+    {
+        $from = now()->subDays(30);
 
-    $aiAnswers = ChatMessage::where('role','assistant')
-        ->whereHas('session', fn($q)=>$q->where('user_id',$user->id))
+        return ChatSession::where('created_at', '>=', $from)
+        ->distinct('user_id')
+        ->count('user_id');
+    }
+
+    private function trashedUsersLast30Days(): int
+    {
+        $from = now()->subDays(30);
+
+        return User::onlyTrashed()->where('created_at', '>=', $from)->count();
+    }
+
+    private function searchesToday(): int
+    {
+    // считаем "поиски" как сообщения пользователя в чатах за сегодня
+        return ChatMessage::where('role', 'user')
+        ->whereDate('created_at', today())
+        ->count();
+    }
+
+    private function csatOverall(): float
+    {
+        $fromDate = now()->subDays(30);
+
+    // 1️⃣ Всего сессий за 30 дней
+        $totalSessions = \App\Models\ChatSession::where(
+            'created_at',
+            '>=',
+            $fromDate
+        )->count();
+
+        if ($totalSessions === 0) {
+            return 0;
+        }
+
+    // 2️⃣ Сессии с положительным feedback
+        $positiveSessions = \App\Models\ChatSession::where(
+            'created_at',
+            '>=',
+            $fromDate
+        )
+        ->whereHas('messages.feedback', function ($q) {
+            $q->where('is_useful', true);
+        })
+        ->distinct()
         ->count();
 
-    $aiCost = round($aiAnswers * config('ai.cost_per_answer', 0.002), 2);
+        return round(($positiveSessions / $totalSessions) * 100, 1);
+    }
 
-    $margin = $totalRevenue > 0
+    private function mostViewedDocument()
+    {
+        $document = Document::with(['categories','functions'])
+        ->withCount([
+            'views as views_last_30_days' => function ($q) {
+                $q->where('created_at', '>=', now()->subDays(30));
+            }
+        ])
+        ->orderByDesc('views_last_30_days')
+        ->first();
+
+        if (!$document) {
+            return null;
+        }
+
+        $aiSearches = ChatMessage::where('role','user')
+        ->where('created_at', '>=', now()->subDays(30))
+        ->where('content','like','%'.$document->title.'%')
+        ->count();
+
+        return [
+            'id' => $document->id,
+            'title' => $document->getTranslation2('title','en'),
+            'description' => $document->getTranslation('description','en'),
+            'categories' => $document->categories->pluck('name'),
+            'functions' => $document->functions->pluck('name'),
+            'views_last_30_days' => $document->views_last_30_days,
+            'ai_searches_last_30_days' => $aiSearches,
+        ];
+    }   
+
+    private function aiEconomics($user = null): array
+    {
+        $daysAgo = now()->subDays(30);
+
+    // Revenue query
+        $revenueQuery = Subscription::query()
+        ->whereIn('subscriptions.status', ['active', 'canceled', 'trialing'])
+        ->where('subscriptions.created_at', '>=', $daysAgo)
+        ->join('plan_prices', 'subscriptions.plan_price_id', '=', 'plan_prices.id');
+
+        if ($user) {
+            $revenueQuery->where('subscriptions.user_id', $user->id);
+        }
+
+        $totalRevenue = (float) $revenueQuery->sum('plan_prices.price');
+
+    // AI answers query
+        $answersQuery = ChatMessage::query()
+        ->where('role', 'assistant')
+        ->where('created_at', '>=', $daysAgo);
+
+        if ($user) {
+            $answersQuery->whereHas('session', fn ($q) => $q->where('user_id', $user->id));
+            $subscription = $this->subscriptionCard($user);
+        }
+
+        $aiAnswers = (int) $answersQuery->count();
+
+        $aiCost = round($aiAnswers * (float) config('ai.cost_per_answer', 0.002), 2);
+
+        $margin = $totalRevenue > 0
         ? round((($totalRevenue - $aiCost) / $totalRevenue) * 100, 1)
         : 0;
 
-    return [
-        'current_plan' => [
-            'name'   => $subscription['name'] ?? 'None',
-            'status' => $subscription['status'] ?? '',
-            'price'  => $subscription['price'] ?? 0,
-            'period' => $subscription['period'] ?? 0,
-        ],
+        if ($user) {
+            return [
+                'current_plan' => [
+                    'name'   => $subscription['name'] ?? 'None',
+                    'status' => $subscription['status'] ?? '',
+                    'price'  => $subscription['price'] ?? 0,
+                    'period' => $subscription['period'] ?? 0,
+                ],
+                'total_revenue' => round($totalRevenue, 2),
+                'total_ai_cost' => $aiCost,
+                'net_margin'    => $margin,
+            ];
+        }
 
-        'total_revenue' => round($totalRevenue, 2),
-        'total_ai_cost' => $aiCost,
-        'net_margin'    => $margin,
-    ];
-}
-
-private function subscriptionCard($user): array
-{
-    $subscription = $user->subscription()
-        ->with(['planPrice.plan'])
-        ->first();
-
-    if (!$subscription) {
         return [
-            'name'   => 'Free',
-            'price'  => 0,
-            'status' => 'inactive'
+            'total_revenue' => round($totalRevenue, 2),
+            'total_ai_cost' => $aiCost,
+            'net_margin'    => $margin,
         ];
     }
 
-    return [
-        'name'   => $subscription->planPrice->plan->name,
-        'price'  => $subscription->planPrice->price,
-        'period' => $subscription->planPrice->period ?? 'month',
-        'status' => $subscription->status
-    ];
-}
+    private function subscriptionCard($user): array
+    {
+        $subscription = $user->subscription()
+        ->with(['planPrice.plan'])
+        ->first();
+
+        if (!$subscription) {
+            return [
+                'name'   => 'Free',
+                'price'  => 0,
+                'status' => 'inactive'
+            ];
+        }
+
+        return [
+            'name'   => $subscription->planPrice->plan->name,
+            'price'  => $subscription->planPrice->price,
+            'period' => $subscription->planPrice->period ?? 'month',
+            'status' => $subscription->status
+        ];
+    }
 
     /* ============================================================
      | LAST 10 DOCUMENTS

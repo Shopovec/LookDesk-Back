@@ -5,10 +5,14 @@ namespace App\Models;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Laravel\Sanctum\HasApiTokens;
 use Illuminate\Notifications\Notifiable;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Database\Eloquent\SoftDeletes;
+
+
 
 class User extends Authenticatable
 {
-    use HasApiTokens, Notifiable;
+    use HasApiTokens, Notifiable, SoftDeletes;
 
     protected $fillable = [
         'name',
@@ -33,6 +37,31 @@ class User extends Authenticatable
         'remember_token',
     ];
 
+    public function documents()
+    {
+    // Document.created_by -> users.id
+        return $this->hasMany(Document::class, 'created_by', 'id');
+    }
+
+    public function clientUsers()
+    {
+    // users.client_creator_id -> users.id
+        return $this->hasMany(User::class, 'client_creator_id', 'id');
+    }
+
+    protected static function booted()
+    {
+        static::created(function ($user) {
+        // берем все system-функции
+            $functionIds = FunctionZ::query()
+            ->where('is_system', 1)
+            ->pluck('id');
+
+        // прикрепляем, не снося возможные уже добавленные (на всякий случай)
+            $user->functions()->syncWithoutDetaching($functionIds->all());
+        });
+    }
+
     public function role()
     {
         return $this->belongsTo(Role::class);
@@ -48,7 +77,7 @@ class User extends Authenticatable
         return $this->belongsToMany(FunctionZ::class, 'user_function', 'user_id', 'function_id');
     }
 
-    public function cliwntCreator()
+    public function clientCreator()
     {
         return $this->belongsTo(User::class, 'client_creator_id');
     }

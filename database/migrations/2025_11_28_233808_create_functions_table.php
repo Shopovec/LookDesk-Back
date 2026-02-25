@@ -10,6 +10,7 @@ class CreateFunctionsTable extends Migration
     {
         Schema::create('functions', function (Blueprint $table) {
             $table->id();
+            $table->boolean('is_system')->default(false);
             $table->timestamps();
         });
     }

@@ -58,11 +58,18 @@ class UserController extends Controller
 )]
     public function index(Request $request)
     {
+        $query = User::query()->withCount([
+        'documents as documents_count',
+        'clientUsers as client_users_count',
+    ])->with('role', 'functions');
 
-        $query = User::query()->with('role', 'functions');
+        $me = auth()->user();
 
-        if (auth()->user()->hasRole('user') || auth()->user()->hasRole('client')) {
-            $query->where('client_creator_id', auth()->user()->id);
+        if ($me->hasRole('user') || $me->hasRole('client') || $me->hasRole('owner')) {
+            $query->where(function ($q) use ($me) {
+                $q->where('client_creator_id', $me->id)
+              ->orWhere('id', $me->id); // ✅ добавить себя
+          });
         }
 
         if ($request->username) {
@@ -85,12 +92,17 @@ class UserController extends Controller
         }
 
         if ($request->function_id) {
-            $q->whereHas('functions', fn($x) =>
+            $query->whereHas('functions', fn($x) =>
                 $x->where('functions.id', $request->function_id)
             );
         }
 
-        return $this->success($query->paginate(20));
+
+        return $this->success($query->paginate(20)->getCollection()->transform(function ($user) {
+    $user->documents_count = (int) $user->documents_count;
+    $user->client_users_count = (int) $user->client_users_count;
+    return $user;
+}));
     }
 
     /* ============================================================
@@ -116,7 +128,7 @@ class UserController extends Controller
 )]
     public function show($id)
     {
-        $user = User::with('role', 'functions')->find($id);
+        $user = User::with('role', 'functions', 'functions.translations')->find($id);
         if (!$user) return $this->error("Not found", 404);
 
         return $this->success($user);
@@ -138,25 +150,25 @@ class UserController extends Controller
             schema: new OA\Schema(
                 type: "object",
                 properties: [
-                   new OA\Property(property: "name", type: "string"),
-                   new OA\Property(property: "email", type: "string"),
-                   new OA\Property(property: "password", type: "string"),
-                   new OA\Property(property: "role_id", type: "integer"),
-                   new OA\Property(
+                 new OA\Property(property: "name", type: "string"),
+                 new OA\Property(property: "email", type: "string"),
+                 new OA\Property(property: "password", type: "string"),
+                 new OA\Property(property: "role_id", type: "integer"),
+                 new OA\Property(
                     property: "functions[0][id]",
                     type: "integer",
                     example: "1"
                 ),
 
 
-                   new OA\Property(
+                 new OA\Property(
                     property: "functions[1][id]",
                     type: "integer",
                     example: "1"
                 ),
 
-               ]
-           )
+             ]
+         )
         )
     ),
      responses: [
@@ -171,7 +183,8 @@ class UserController extends Controller
                 'name'     => 'required|string',
                 'email'    => 'required|email|unique:users',
                 'password' => 'required|string|min:6',
-                'role_id'  => 'required|integer|exists:roles,id', 
+                'role_id'  => 'nullable|integer|exists:roles,id', 
+                'role'  => 'nullable|integer|exists:roles,name', 
                 'functions'          => 'required|array',
                 'functions.*.id'   => 'required|integer',
             ]);
@@ -180,17 +193,24 @@ class UserController extends Controller
                 'name'     => 'required|string',
                 'email'    => 'required|email|unique:users',
                 'password' => 'required|string|min:6',
-                'role_id'  => 'required|integer|exists:roles,id', 
+               'role_id'  => 'nullable|integer|exists:roles,id', 
+                'role'  => 'nullable|integer|exists:roles,name', 
                 'functions'          => 'nullable|array',
                 'functions.*.id'   => 'nullable|integer',
             ]);
         }
-        
+
+        $role_id = $request->role_id;
+
+        if ($request->role) {
+           $role = \App\Models\Role::where('name', strtolower($request->role))->first();
+           $role_id = $role->id;
+        }
 
         $user = User::create([
             'name'     => $request->name,
             'email'    => $request->email,
-            'role_id'  => $request->role_id,
+            'role_id'  => $role_id, 
             'password' => Hash::make($request->password),
         ]);
 
@@ -223,25 +243,25 @@ class UserController extends Controller
             schema: new OA\Schema(
                 type: "object",
                 properties: [
-                   new OA\Property(property: "name", type: "string"),
-                   new OA\Property(property: "email", type: "string"),
-                   new OA\Property(property: "password", type: "string"),
-                   new OA\Property(property: "role_id", type: "integer"),
-                   new OA\Property(
+                 new OA\Property(property: "name", type: "string"),
+                 new OA\Property(property: "email", type: "string"),
+                 new OA\Property(property: "password", type: "string"),
+                 new OA\Property(property: "role_id", type: "integer"),
+                 new OA\Property(
                     property: "functions[0][id]",
                     type: "integer",
                     example: "1"
                 ),
 
 
-                   new OA\Property(
+                 new OA\Property(
                     property: "functions[1][id]",
                     type: "integer",
                     example: "1"
                 ),
 
-               ]
-           )
+             ]
+         )
         )
     ),
      responses: [
@@ -273,9 +293,14 @@ class UserController extends Controller
             $user->role_id = $request->role_id;
         }
 
+        if ($request->role) {
+            $role = \App\Models\Role::where('name', strtolower($request->role))->first();
+            $user->role_id = $role->id;
+        }
+
         $user->save();
 
-        $functions  = collect($request->functions)->pluck('id')->toArray();
+        $functions  = $request->functions;
 
         $user->functions()->sync($functions ?? $user->functions->pluck('id')->toArray());
 
@@ -347,5 +372,115 @@ class UserController extends Controller
         $user->save();
 
         return $this->success($user->load('role'), "Role updated");
+    }
+
+     /* ============================================================
+     | ASSIGN FUNCTIONS (ADD ONLY)
+     ============================================================ */
+    #[OA\Put(
+        path: "/api/users/{id}/assignFunctions",
+        summary: "Assign (attach) functions to user (does not remove others)",
+        tags: ["Users"],
+        security: [["sanctum" => []]],
+        parameters: [
+            new OA\Parameter(
+                name: "id",
+                in: "path",
+                required: true,
+                schema: new OA\Schema(type: "integer")
+            ),
+        ],
+        requestBody: new OA\RequestBody(
+            required: true,
+            content: new OA\JsonContent(
+                type: "object",
+                required: ["function_ids"],
+                properties: [
+                    new OA\Property(
+                        property: "function_ids",
+                        type: "array",
+                        items: new OA\Items(type: "integer"),
+                        example: [1,2,3]
+                    ),
+                ]
+            )
+        ),
+        responses: [
+            new OA\Response(response: 200, description: "Updated"),
+            new OA\Response(response: 404, description: "Not found"),
+            new OA\Response(response: 422, description: "Validation error"),
+        ]
+    )]
+    public function assignFunctions(Request $request, $id)
+    {
+        $user = User::find($id);
+        if (!$user) return $this->error("Not found", 404);
+
+        $data = $request->validate([
+            'function_ids' => ['required', 'array', 'min:1'],
+            'function_ids.*' => ['integer', 'distinct', 'exists:functions,id'], // <-- подставь реальное имя таблицы функций
+        ]);
+
+        $ids = $data['function_ids'];
+
+        // добавляем, не удаляя остальные
+        $user->functions()->syncWithoutDetaching($ids);
+
+        return $this->success($user->load(['role', 'functions', 'functions.translations']), "Updated");
+    }
+
+    /* ============================================================
+     | REMOVE FUNCTIONS (DETACH ONLY)
+     ============================================================ */
+    #[OA\Delete(
+        path: "/api/users/{id}/removeFunctions",
+        summary: "Remove (detach) functions from user (does not affect others)",
+        tags: ["Users"],
+        security: [["sanctum" => []]],
+        parameters: [
+            new OA\Parameter(
+                name: "id",
+                in: "path",
+                required: true,
+                schema: new OA\Schema(type: "integer")
+            ),
+        ],
+        requestBody: new OA\RequestBody(
+            required: true,
+            content: new OA\JsonContent(
+                type: "object",
+                required: ["function_ids"],
+                properties: [
+                    new OA\Property(
+                        property: "function_ids",
+                        type: "array",
+                        items: new OA\Items(type: "integer"),
+                        example: [2,5]
+                    ),
+                ]
+            )
+        ),
+        responses: [
+            new OA\Response(response: 200, description: "Updated"),
+            new OA\Response(response: 404, description: "Not found"),
+            new OA\Response(response: 422, description: "Validation error"),
+        ]
+    )]
+    public function removeFunctions(Request $request, $id)
+    {
+        $user = User::find($id);
+        if (!$user) return $this->error("Not found", 404);
+
+        $data = $request->validate([
+            'function_ids' => ['required', 'array', 'min:1'],
+            'function_ids.*' => ['integer', 'distinct', 'exists:functions,id'], // <-- подставь реальное имя таблицы функций
+        ]);
+
+        $ids = $data['function_ids'];
+
+        // удаляем только указанные, остальные не трогаем
+        $user->functions()->detach($ids);
+
+        return $this->success($user->load(['role', 'functions', 'functions.translations']), "Updated");
     }
 }

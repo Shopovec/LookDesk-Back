@@ -8,6 +8,7 @@ use App\Traits\ApiResponse;
 use Illuminate\Http\Request;
 use OpenApi\Attributes as OA;
 use Stripe\Stripe;
+use Stripe\Subscription as StripeSubscription;
 use Stripe\Product;
 use Stripe\Price as StripePrice;
 use Stripe\Customer;

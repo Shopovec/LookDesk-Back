@@ -24,7 +24,7 @@ class Event extends Model
 
     public function getTitle()
     {
-        $title = "";
+        $title = " ";
         switch ($this->model) :
             case "document": 
             $title = 'Document Events';
@@ -51,19 +51,19 @@ class Event extends Model
             switch ($this->model) :
                 case "document": 
                 $model = Document::find($this->model_id); 
-                $title = $model->getTitle('en');
+                $title = $model?->getTitle('en') ?? '';
                 break;
                 case "category": 
                 $model = Category::find($this->model_id); 
-                $title = $model->getTitle('en');
+                $title = $model?->getTitle('en') ?? '';
                 break;  
                 case "function": 
                 $model = FunctionZ::find($this->model_id); 
-                $title = $model->getTitle('en');
+                $title = $model?->getTitle('en') ?? '';
                 break;    
                 case "user": 
                 $model = User::find($this->model_id); 
-                $title = $model->name;
+                $title = $model?->name;
                 break;    
             endswitch;
         }

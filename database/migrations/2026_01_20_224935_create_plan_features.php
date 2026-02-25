@@ -19,6 +19,13 @@ class CreatePlanFeatures extends Migration
             $table->string('title');
             $table->integer('sort')->default(0);
         });
+
+        Schema::create('role_features', function (Blueprint $table) {
+            $table->id();
+            $table->foreignId('role_id')->constrained()->cascadeOnDelete();
+            $table->string('title');
+            $table->integer('sort')->default(0);
+        });
     }
 
     /**
@@ -28,6 +35,7 @@ class CreatePlanFeatures extends Migration
      */
     public function down()
     {
+        Schema::dropIfExists('role_features');
         Schema::dropIfExists('plan_features');
     }
 }

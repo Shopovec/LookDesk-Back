@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\FunctionZ;
+use App\Models\User;
 use App\Models\FunctionTranslation;
 use App\Traits\ApiResponse;
 use Illuminate\Http\Request;
@@ -26,26 +27,50 @@ class FunctionController extends Controller
      |  returns nested structure
      ------------------------------------------------------------- */
     #[OA\Get(
-        path: "/api/functions",
-        summary: "Get all functions (with translations)",
-        tags: ["functions"],
-        security: [["sanctum" => []]],
-        parameters: [
-            new OA\Parameter(
-                name: "lang",
-                in: "query",
-                schema: new OA\Schema(type: "string")
-            )
-        ],
-        responses: [
-            new OA\Response(response: 200, description: "functions list")
-        ]
-    )]
+     path: "/api/functions",
+     summary: "Get all functions (with translations)",
+     tags: ["functions"],
+     security: [["sanctum" => []]],
+     parameters: [
+        new OA\Parameter(
+            name: "lang",
+            in: "query",
+            schema: new OA\Schema(type: "string")
+        )
+    ],
+    responses: [
+        new OA\Response(response: 200, description: "functions list")
+    ]
+)]
     public function index(Request $request)
     {
         $lang = $request->get('lang', 'en');
 
         $query = FunctionZ::query()->with(['translations']);
+
+        $me = auth()->user();
+
+        if ($me->hasRole('user') || $me->hasRole('client')) {
+
+        // если клиент — берем owner-а, иначе себя
+            $ownerId = $me->id;
+
+        // показать функции, привязанные к ownerId (через pivot user_function)
+            $query->whereHas('users', function ($q) use ($ownerId) {
+                $q->where('users.id', $ownerId);
+            });
+        }
+
+        if ($me->hasRole('owner') ) {
+
+        // если клиент — берем owner-а, иначе себя
+            $ownerId = $me->id;
+
+        // показать функции, привязанные к ownerId (через pivot user_function)
+            $query->whereHas('users', function ($q) use ($ownerId) {
+                $q->where('users.id', $ownerId);
+            });
+        }
 
         $items = $query->get();
 
@@ -61,36 +86,34 @@ class FunctionController extends Controller
      | CREATE Function
      ------------------------------------------------------------- */
     #[OA\Post(
-        path: "/api/functions",
-        summary: "Create new Function",
-        tags: ["functions"],
-        security: [["sanctum" => []]],
-        requestBody: new OA\RequestBody(
-            required: true,
-            content: new OA\JsonContent(
-                properties: [
-                    new OA\Property(property: "translations", type: "array", items:
-                        new OA\Items(
-                            properties: [
-                                new OA\Property(property: "lang", type: "string"),
-                                new OA\Property(property: "title", type: "string"),
-                                new OA\Property(property: "description", type: "string", nullable: true),
-                            ],
-                            required: ["lang", "title"]
-                        )
+     path: "/api/functions",
+     summary: "Create new Function",
+     tags: ["functions"],
+     security: [["sanctum" => []]],
+     requestBody: new OA\RequestBody(
+        required: true,
+        content: new OA\JsonContent(
+            properties: [
+                new OA\Property(property: "translations", type: "array", items:
+                    new OA\Items(
+                        properties: [
+                            new OA\Property(property: "lang", type: "string"),
+                            new OA\Property(property: "title", type: "string"),
+                            new OA\Property(property: "description", type: "string", nullable: true),
+                        ],
+                        required: ["lang", "title"]
                     )
-                ],
-                required: ["translations"]
-            )
-        ),
-        responses: [
-            new OA\Response(response: 201, description: "Created")
-        ]
-    )]
+                )
+            ],
+            required: ["translations"]
+        )
+    ),
+     responses: [
+        new OA\Response(response: 201, description: "Created")
+    ]
+)]
     public function store(Request $request)
     {
-        $this->checkOwnerAdmin();
-
         $request->validate([
             'translations' => 'required|array',
             'translations.*.lang' => 'required|string',
@@ -108,6 +131,21 @@ class FunctionController extends Controller
             ]);
         }
 
+        $current_user = auth()->user();
+
+        if ($current_user->hasRole('owner')) {
+            $team_users = User::where('client_creator_id', $current_user->id)->get();
+            foreach ($team_users as $user) {
+                $user->functions()->syncWithoutDetaching([$function->id]);
+            }
+
+        } else {
+            $team_users = User::where('client_creator_id', $current_user->client_creator_id)->get();
+            foreach ($team_users as $user) {
+                $user->functions()->syncWithoutDetaching([$function->id]);
+            }
+        }
+
         Event::create([
             'user_id' => auth()->user()->id,
             'action'  => 'created',
@@ -122,27 +160,27 @@ class FunctionController extends Controller
      | SHOW Function
      ------------------------------------------------------------- */
     #[OA\Get(
-        path: "/api/functions/{id}",
-        summary: "Get Function by ID",
-        tags: ["functions"],
-        security: [["sanctum" => []]],
-        parameters: [
-            new OA\Parameter(
-                name: "id",
-                in: "path",
-                schema: new OA\Schema(type: "integer")
-            ),
-            new OA\Parameter(
-                name: "lang",
-                in: "query",
-                schema: new OA\Schema(type: "string")
-            )
-        ],
-        responses: [
-            new OA\Response(response: 200, description: "Function found"),
-            new OA\Response(response: 404, description: "Not found")
-        ]
-    )]
+     path: "/api/functions/{id}",
+     summary: "Get Function by ID",
+     tags: ["functions"],
+     security: [["sanctum" => []]],
+     parameters: [
+        new OA\Parameter(
+            name: "id",
+            in: "path",
+            schema: new OA\Schema(type: "integer")
+        ),
+        new OA\Parameter(
+            name: "lang",
+            in: "query",
+            schema: new OA\Schema(type: "string")
+        )
+    ],
+    responses: [
+        new OA\Response(response: 200, description: "Function found"),
+        new OA\Response(response: 404, description: "Not found")
+    ]
+)]
     public function show($id, Request $request)
     {
         $lang = $request->get('lang', 'en');
@@ -159,33 +197,38 @@ class FunctionController extends Controller
      | UPDATE Function
      ------------------------------------------------------------- */
     #[OA\Put(
-        path: "/api/functions/{id}",
-        summary: "Update Function",
-        tags: ["functions"],
-        security: [["sanctum" => []]],
-        requestBody: new OA\RequestBody(
-            content: new OA\JsonContent(
-                properties: [
-                    new OA\Property(property: "translations", type: "array", items:
-                        new OA\Items(
-                            properties: [
-                                new OA\Property(property: "lang", type: "string"),
-                                new OA\Property(property: "title", type: "string"),
-                                new OA\Property(property: "description", type: "string", nullable: true)
-                            ]
-                        )
+     path: "/api/functions/{id}",
+     summary: "Update Function",
+     tags: ["functions"],
+     security: [["sanctum" => []]],
+    parameters: [
+        new OA\Parameter(
+            name: "id",
+            in: "path",
+            schema: new OA\Schema(type: "integer")
+        )
+    ],
+     requestBody: new OA\RequestBody(
+        content: new OA\JsonContent(
+            properties: [
+                new OA\Property(property: "translations", type: "array", items:
+                    new OA\Items(
+                        properties: [
+                            new OA\Property(property: "lang", type: "string"),
+                            new OA\Property(property: "title", type: "string"),
+                            new OA\Property(property: "description", type: "string", nullable: true)
+                        ]
                     )
-                ]
-            )
-        ),
-        responses: [
-            new OA\Response(response: 200, description: "Updated")
-        ]
-    )]
+                )
+            ]
+        )
+    ),
+     responses: [
+        new OA\Response(response: 200, description: "Updated")
+    ]
+)]
     public function update($id, Request $request)
     {
-        $this->checkOwnerAdmin();
-
         $function = FunctionZ::find($id);
         if (!$function) return $this->error("Not found", 404);
 
@@ -211,27 +254,52 @@ class FunctionController extends Controller
      | DELETE Function
      ------------------------------------------------------------- */
     #[OA\Delete(
-        path: "/api/functions/{id}",
-        summary: "Delete Function",
-        tags: ["functions"],
-        security: [["sanctum" => []]],
-        responses: [
-            new OA\Response(response: 200, description: "Deleted")
-        ]
-    )]
+     path: "/api/functions/{id}",
+     summary: "Delete Function",
+         parameters: [
+        new OA\Parameter(
+            name: "id",
+            in: "path",
+            schema: new OA\Schema(type: "integer")
+        )
+    ],
+     tags: ["functions"],
+     security: [["sanctum" => []]],
+     responses: [
+        new OA\Response(response: 200, description: "Deleted")
+    ]
+)]
     public function destroy($id)
     {
-        $this->checkOwnerAdmin();
 
         $function = FunctionZ::find($id);
         if (!$function) return $this->error("Not found", 404);
+
+        $current_user = auth()->user();
+
+        $current_user->functions()->detach([$id]);
+
+        if ($current_user->hasRole('owner')) {
+            $team_users = User::where('client_creator_id', $current_user->id)->get();
+            foreach ($team_users as $user) {
+                $user->functions()->detach([$id]);
+            }
+
+        } else {
+            $team_users = User::where('client_creator_id', $current_user->client_creator_id)->get();
+            foreach ($team_users as $user) {
+                $user->functions()->detach([$id]);
+            }
+        }
+
+        if ($function->is_system) return $this->success(null, "Deleted");
 
         Event::create([
             'user_id' => auth()->user()->id,
             'action'  => 'deleted',
             'model' => 'function',
             'model_id' => $function->id,
-            'deleted_title' => $function->translations()[0]->title
+            'deleted_title' => $function->getTranslation()['title']
         ]);
 
         $function->translations()->delete();
@@ -243,8 +311,8 @@ class FunctionController extends Controller
     /* -------------------------------------------------------------
      | OWNER / ADMIN VALIDATION
      ------------------------------------------------------------- */
-    private function checkOwnerAdmin()
-    {
+     private function checkOwnerAdmin()
+     {
         $user = auth()->user();
         if (!$user || !in_array($user->role_id, [1, 2])) {
             abort(403, "Forbidden");

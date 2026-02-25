@@ -13,7 +13,13 @@ class FunctionZ extends Model
     protected $table = 'functions';
 
     protected $fillable = [
+        'is_system'
     ];
+
+    public function users()
+    {
+        return $this->belongsToMany(User::class, 'user_function', 'function_id', 'user_id');
+    }
 
     public function translations()
     {

@@ -57,17 +57,33 @@ class Document extends Model
     // Helpers for API output
     public function getTitle($lang = null)
     {
-        return $this->translate('title', $lang);
+        return $this->getTranslation2('title', $lang) ?? '';
     }
 
     public function getContent($lang = null)
     {
-        return $this->translate('content', $lang);
+        return $this->getTranslation2('content', $lang);
     }
 
     public function getSummary($lang = null)
     {
-        return $this->translate('summary', $lang);
+        return $this->getTranslation2('summary', $lang);
+    }
+
+    public function getTranslation2($key, $lang = null)
+    {
+        $tr = $this->translations
+        ->firstWhere('lang', $lang)
+        ?? $this->translations->first();
+
+        if (!$tr) return '';
+
+        $j = [
+            'lang' => $tr->lang,
+            'title' => $tr->title,
+            'description' => $tr->description,
+        ];
+        return $j[$key];
     }
 
     public function getTranslation($lang = null)
@@ -76,12 +92,17 @@ class Document extends Model
         ->firstWhere('lang', $lang)
         ?? $this->translations->first();
 
-        if (!$tr) return null;
+        if (!$tr) return '';
 
         return [
             'lang' => $tr->lang,
             'title' => $tr->title,
             'description' => $tr->description,
         ];
+    }
+
+    public function views()
+    {
+        return $this->hasMany(DocumentView::class);
     }
 }
