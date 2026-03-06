@@ -40,7 +40,8 @@ class Kernel extends HttpKernel
         ],
 
         'api' => [
-            'throttle:api',
+            \App\Http\Middleware\UpdateUserLastSeen::class,
+            //'throttle:api',
             \Illuminate\Routing\Middleware\SubstituteBindings::class,
              \App\Http\Middleware\ForceJson::class,
 

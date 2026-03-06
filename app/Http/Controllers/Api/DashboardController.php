@@ -16,6 +16,8 @@ use App\Models\ChatSession;
 use App\Models\ChatMessage;
 use App\Models\AiDocumentStat;
 use App\Models\Subscription;
+use Illuminate\Support\Facades\DB;
+
 
 class DashboardController extends Controller
 {
@@ -93,6 +95,54 @@ class DashboardController extends Controller
         }
 
         return $this->success($data);
+    }
+
+
+      #[OA\Get(
+    path: "/api/top_search_documents",
+    summary: "Dashboard summary",
+    description: "Returns overall system statistics for dashboard widgets",
+    tags: ["Dashboard"],
+    security: [["sanctum" => []]],
+    responses: [
+        new OA\Response(response: 200, description: "Dashboard data")
+    ]
+)]
+      public function top_search_documents(Request $request)
+      {
+        $stats = DB::select("
+          SELECT d.id as doc_id, COUNT(*) as total
+FROM (
+    SELECT JSON_EXTRACT(meta, '$.picked_ids[0]') as doc_id
+    FROM chat_messages
+    WHERE role = 'assistant'
+
+    UNION ALL
+
+    SELECT JSON_EXTRACT(meta, '$.picked_ids[1]') as doc_id
+    FROM chat_messages
+    WHERE role = 'assistant'
+) t
+JOIN documents d ON d.id = t.doc_id
+WHERE t.doc_id IS NOT NULL
+GROUP BY d.id
+ORDER BY total DESC
+LIMIT 3;
+            ");
+
+        $stats = collect($stats);
+
+
+        $documents = Document::with(['translations','categories','functions'])->whereIn('id', $stats->pluck('doc_id'))->get();
+        $documents = $documents->transform(function ($doc) use ($stats) {
+
+            $stat = $stats->firstWhere('doc_id', $doc->id);
+
+            $doc->total = $stat->total ?? 0;
+
+            return $doc;
+        });
+        return $this->success($documents);
     }
 
 

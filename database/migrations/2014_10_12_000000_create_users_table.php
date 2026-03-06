@@ -23,6 +23,7 @@ class CreateUsersTable extends Migration
             $table->json('settings')->nullable();
 
             $table->timestamp('email_verified_at')->nullable();
+            $table->timestamp('last_seen_at')->nullable()->index();
 
             $table->rememberToken();
             $table->timestamps();

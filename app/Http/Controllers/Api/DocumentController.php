@@ -15,14 +15,51 @@ use App\Models\DocumentEmbedding;
 use App\Services\OllamaClient;
 use App\Models\DocumentView;
 use App\Models\ChatMessage;
+use PhpOffice\PhpWord\IOFactory;
+use Maatwebsite\Excel\Facades\Excel;
+use Barryvdh\DomPDF\Facade\Pdf;
+use App\Exports\DocumentsExport;
 
 class DocumentController extends Controller
 {
     use ApiResponse;
 
-    public function __construct()
+    #[OA\Put(
+    path: "/api/documents/{id}/favorite",
+    summary: "Mark/unmark a document as favorite",
+    tags: ["Documents"],
+    security: [["sanctum" => []]],
+    parameters: [
+        new OA\Parameter(name: "id", in: "path", required: true, schema: new OA\Schema(type: "integer")),
+    ],
+    requestBody: new OA\RequestBody(
+        required: true,
+        content: new OA\JsonContent(
+            required: ["is_favorite"],
+            properties: [
+                new OA\Property(property: "is_favorite", type: "boolean", example: true),
+            ]
+        )
+    ),
+    responses: [
+        new OA\Response(response: 200, description: "Updated search query"),
+        new OA\Response(response: 404, description: "Not found"),
+    ]
+)]
+
+    public function favorite($id, Request $request)
     {
-        $this->middleware('auth:sanctum');
+        $data = $request->validate([
+            'is_favorite' => 'required|boolean',
+        ]);
+
+        $q = Document::find($id);
+        if (!$q) return response()->json(['message' => 'Not found'], 404);
+
+        $q->is_favorite = (bool) $data['is_favorite'];
+        $q->save();
+
+        return response()->json($q);
     }
 
     /* ======================================================
@@ -75,26 +112,42 @@ class DocumentController extends Controller
 
         $items->transform(function ($doc) use ($lang) {
 
-             DocumentView::create([
-        'document_id' => $doc->id,
-        'user_id' => auth()->id()
-    ]);
+         DocumentView::create([
+            'document_id' => $doc->id,
+            'user_id' => auth()->id()
+        ]);
 
-    $doc->translated = $doc->getTranslation($lang);
+         $doc->translated = $doc->getTranslation($lang);
 
-    $doc->views_last_30_days = $doc->views()
-        ->where('created_at','>=',now()->subDays(30))
-        ->count();
+         $doc->views_last_30_days = $doc->views()
+         ->where('created_at','>=',now()->subDays(30))
+         ->count();
 
+         $doc->ai_searches_last_30_days = isset($doc->translated['title']) ? ChatMessage::where('role','user')
+         ->where('created_at','>=',now()->subDays(30))
+         ->where('content','like','%'.$doc->translated['title'].'%')
+         ->count() : 0;
 
+         return $doc;
+     });
 
-    $doc->ai_searches_last_30_days = ChatMessage::where('role','user')
-        ->where('created_at','>=',now()->subDays(30))
-        ->where('content','like','%'.$doc->translated['title'].'%')
-        ->count();
+        // ✅ EXPORT XLSX
+        if ($request->isExportXSL) {
+            $fileName = 'documents_' . now()->format('Ymd_His') . '.xlsx';
+            return Excel::download(new DocumentsExport($items), $fileName);
+        }
 
-    return $doc;
-});
+    // ✅ EXPORT PDF
+        if ($request->isExportPDF) {
+            $fileName = 'documents_' . now()->format('Ymd_His') . '.pdf';
+
+            $pdf = Pdf::loadView('pdf.documents', [
+                'documents' => $items,
+                'user' => auth()->user(),
+            ])->setPaper('a4');
+
+            return $pdf->download($fileName);
+        }
 
         return $this->success($items);
     }
@@ -335,7 +388,7 @@ public function store(Request $request)
     foreach ($request->translations as $t) {
 
     // 1. Текст по умолчанию из description
-        $text = $t['description'] ?? null;
+        $text = '';
 
         $path = null;
         $ext  = null;
@@ -355,20 +408,56 @@ public function store(Request $request)
         $ext = strtolower($t['file']->getClientOriginalExtension());
         $imagePath = $fullPath;
 
-        // 3. PDF → PNG
         if ($ext === 'pdf') {
+
             $imagePath = $this->convertPdfToPng($fullPath);
 
             if (!$imagePath) {
                 \Log::error('PDF convert failed', ['file' => $fullPath]);
                 continue;
             }
+
+            $ocrLang = $this->mapLangForTesseract($t['lang'] ?? 'en');
+            $text = $this->runTesseract($imagePath, $ocrLang);
+
         }
+        elseif (in_array($ext, ['jpg','jpeg','png','webp'])) {
 
-        $ocrLang = $this->mapLangForTesseract($t['lang'] ?? 'en');
+            $ocrLang = $this->mapLangForTesseract($t['lang'] ?? 'en');
+            $text = $this->runTesseract($fullPath, $ocrLang);
 
-        // 4. OCR (может быть медленным)
-        $text = $this->runTesseract($imagePath, $ocrLang);
+        }
+        elseif ($ext === 'docx') {
+
+            try {
+                $phpWord = IOFactory::load($fullPath);
+                $text = '';
+
+                foreach ($phpWord->getSections() as $section) {
+                    foreach ($section->getElements() as $element) {
+                        if (method_exists($element, 'getText')) {
+                            $text .= $element->getText() . "\n";
+                        }
+                    }
+                }
+
+            } catch (\Exception $e) {
+                \Log::error('DOCX read error', ['error' => $e->getMessage()]);
+                continue;
+            }
+
+        }
+        elseif ($ext === 'txt') {
+
+            $text = file_get_contents($fullPath);
+
+        }
+        else {
+
+            \Log::warning('Unsupported file type', ['ext' => $ext]);
+            continue;
+
+        }
     }
 
 
@@ -388,6 +477,7 @@ public function store(Request $request)
         'lang'        => $t['lang'],
         'title'       => $t['title'],
         'content'     => $text,
+        'summary' => $t['description'], 
             'file_path'   => $path,        // лучше сохранить относительный (из store)
             'file_type'   => $ext,
         ]);
@@ -436,10 +526,10 @@ return $this->success($document->load('translations','categories','functions'), 
 
         $doc->translated = $doc->getTranslation($lang);
 
-         DocumentView::create([
-        'document_id' => $doc->id,
-        'user_id' => auth()->id()
-    ]);
+        DocumentView::create([
+            'document_id' => $doc->id,
+            'user_id' => auth()->id()
+        ]);
 
         return $this->success($doc);
     }
@@ -680,20 +770,56 @@ return $this->success($document->load('translations','categories','functions'), 
         $ext = strtolower($t['file']->getClientOriginalExtension());
         $imagePath = $fullPath;
 
-        // 3. PDF → PNG
         if ($ext === 'pdf') {
+
             $imagePath = $this->convertPdfToPng($fullPath);
 
             if (!$imagePath) {
                 \Log::error('PDF convert failed', ['file' => $fullPath]);
                 continue;
             }
+
+            $ocrLang = $this->mapLangForTesseract($t['lang'] ?? 'en');
+            $text = $this->runTesseract($imagePath, $ocrLang);
+
         }
+        elseif (in_array($ext, ['jpg','jpeg','png','webp'])) {
 
-        $ocrLang = $this->mapLangForTesseract($t['lang'] ?? 'en');
+            $ocrLang = $this->mapLangForTesseract($t['lang'] ?? 'en');
+            $text = $this->runTesseract($fullPath, $ocrLang);
 
-        // 4. OCR (может быть медленным)
-        $text = $this->runTesseract($imagePath, $ocrLang);
+        }
+        elseif ($ext === 'docx') {
+
+            try {
+                $phpWord = IOFactory::load($fullPath);
+                $text = '';
+
+                foreach ($phpWord->getSections() as $section) {
+                    foreach ($section->getElements() as $element) {
+                        if (method_exists($element, 'getText')) {
+                            $text .= $element->getText() . "\n";
+                        }
+                    }
+                }
+
+            } catch (\Exception $e) {
+                \Log::error('DOCX read error', ['error' => $e->getMessage()]);
+                continue;
+            }
+
+        }
+        elseif ($ext === 'txt') {
+
+            $text = file_get_contents($fullPath);
+
+        }
+        else {
+
+            \Log::warning('Unsupported file type', ['ext' => $ext]);
+            continue;
+
+        }
     }
 
     // 5. Сохранение
@@ -722,8 +848,12 @@ return $this->success($doc->load('translations','categories','functions'), "Upda
      path: "/api/documents/{id}",
      summary: "Delete document",
      tags: ["Documents"],
-     security: [["sanctum" => []]],
-     responses: [
+     parameters: [
+        new OA\Parameter(name: "id", in: "path", schema: new OA\Schema(type: "integer")),
+        new OA\Parameter(name: "lang", in: "query", schema: new OA\Schema(type: "string"))
+    ],
+    security: [["sanctum" => []]],
+    responses: [
         new OA\Response(response: 200, description: "Deleted")
     ]
 )]
@@ -741,7 +871,7 @@ return $this->success($doc->load('translations','categories','functions'), "Upda
             'action'  => 'deleted',
             'model' => 'document',
             'model_id' => $doc->id,
-            'deleted_title' => $doc->translations()[0]->title
+            'deleted_title' => $doc->getTranslation('en')['title']
         ]);
 
         $doc->translations()->delete();
@@ -750,24 +880,121 @@ return $this->success($doc->load('translations','categories','functions'), "Upda
         return $this->success(null, "Deleted");
     }
 
+     /* ======================================================
+     | FILE DOWNLOAD
+     ====================================================== */
+    #[OA\Get(
+     path: "/api/documents/{id}/download/xsl",
+     summary: "Download document file",
+     tags: ["Documents"],
+     parameters: [
+        new OA\Parameter(name: "id", in: "path", schema: new OA\Schema(type: "integer")),
+        new OA\Parameter(name: "lang", in: "query", schema: new OA\Schema(type: "string"))
+    ],
+    security: [["sanctum" => []]],
+
+    responses: [
+        new OA\Response(response: 200, description: "File downloaded")
+    ]
+)]
+
+    public function downloadXsl($id, Request $request)
+    {
+        $lang = $request->get('lang', 'en');
+        $q = Document::where('id', $id)->with(['translations','categories','functions']);
+
+
+        $items = $q->orderBy('id', 'desc')->get();
+
+        $items->transform(function ($doc) use ($lang) {
+
+         DocumentView::create([
+            'document_id' => $doc->id,
+            'user_id' => auth()->id()
+        ]);
+
+         $doc->translated = $doc->getTranslation($lang);
+
+         $doc->views_last_30_days = $doc->views()
+         ->where('created_at','>=',now()->subDays(30))
+         ->count();
+
+         $doc->ai_searches_last_30_days = isset($doc->translated['title']) ? ChatMessage::where('role','user')
+         ->where('created_at','>=',now()->subDays(30))
+         ->where('content','like','%'.$doc->translated['title'].'%')
+         ->count() : 0;
+
+         return $doc;
+     });
+
+        // ✅ EXPORT XLSX
+
+        $fileName = 'documents_' . now()->format('Ymd_His') . '.xlsx';
+        return Excel::download(new DocumentsExport($items), $fileName);
+
+    }
     /* ======================================================
      | FILE DOWNLOAD
      ====================================================== */
     #[OA\Get(
-     path: "/api/documents/{id}/download",
+     path: "/api/documents/{id}/download/pdf",
      summary: "Download document file",
      tags: ["Documents"],
-     security: [["sanctum" => []]],
-     responses: [
+     parameters: [
+        new OA\Parameter(name: "id", in: "path", schema: new OA\Schema(type: "integer")),
+        new OA\Parameter(name: "lang", in: "query", schema: new OA\Schema(type: "string")),
+        new OA\Parameter(name: "isView", in: "query", schema: new OA\Schema(type: "boolean"))
+    ],
+    security: [["sanctum" => []]],
+
+    responses: [
         new OA\Response(response: 200, description: "File downloaded")
     ]
 )]
-    public function download($id)
-    {
-        $doc = Document::find($id);
-        if (!$doc) return $this->error("Not found", 404);
 
-        return Storage::download($doc->file_path);
+    public function downloadPDF($id, Request $request)
+    {
+        $lang = $request->get('lang', 'en');
+        $q = Document::where('id', $id)->with(['translations','categories','functions']);
+
+
+        $items = $q->orderBy('id', 'desc')->get();
+
+        $items->transform(function ($doc) use ($lang) {
+
+         DocumentView::create([
+            'document_id' => $doc->id,
+            'user_id' => auth()->id()
+        ]);
+
+         $doc->translated = $doc->getTranslation($lang);
+
+         $doc->views_last_30_days = $doc->views()
+         ->where('created_at','>=',now()->subDays(30))
+         ->count();
+
+         $doc->ai_searches_last_30_days = isset($doc->translated['title']) ? ChatMessage::where('role','user')
+         ->where('created_at','>=',now()->subDays(30))
+         ->where('content','like','%'.$doc->translated['title'].'%')
+         ->count() : 0;
+
+         return $doc;
+     });
+        $fileName = 'documents_' . now()->format('Ymd_His') . '.pdf';
+
+        $pdf = Pdf::loadView('pdf.documents', [
+            'documents' => $items,
+            'user' => auth()->user(),
+        ])->setPaper('a4');
+
+        if ($request->boolean('isView')) {
+            return response($pdf->output(), 200)
+            ->header('Content-Type', 'application/pdf')
+            ->header('Content-Disposition', 'inline; filename="'.$fileName.'"');
+        }
+
+        return $pdf->download($fileName);
+
     }
 
     /* ======================================================

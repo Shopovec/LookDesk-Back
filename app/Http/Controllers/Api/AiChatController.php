@@ -11,6 +11,10 @@ use App\Services\AISearchService;
 use Illuminate\Http\Request;
 use OpenApi\Attributes as OA;
 use App\Models\AiDocumentStat;
+use Symfony\Component\HttpFoundation\BinaryFileResponse;
+use Maatwebsite\Excel\Facades\Excel;
+use Barryvdh\DomPDF\Facade\Pdf;
+use App\Exports\AiChatSessionExport;
 
 class AiChatController extends Controller
 {
@@ -19,24 +23,123 @@ class AiChatController extends Controller
         $this->middleware('auth:sanctum');
     }
 
-    #[OA\Post(
-    path: "/api/ai/search",
-    summary: "Create AI chat session from query (Recent Search with AI)",
+    #[OA\Put(
+    path: "/api/ai/sessions/{id}/favorite",
+    summary: "Mark/unmark a search query as favorite",
     tags: ["AI Chat"],
     security: [["sanctum" => []]],
+    parameters: [
+        new OA\Parameter(name: "id", in: "path", required: true, schema: new OA\Schema(type: "integer")),
+    ],
     requestBody: new OA\RequestBody(
         required: true,
         content: new OA\JsonContent(
-            required: ["query"],
+            required: ["is_favorite"],
             properties: [
-                new OA\Property(property: "query", type: "string", example: "Where can I find the new GDPR compliance rules?"),
-                new OA\Property(property: "lang", type: "string", example: "en")
+                new OA\Property(property: "is_favorite", type: "boolean", example: true),
             ]
         )
     ),
     responses: [
-        new OA\Response(response: 200, description: "Chat session with messages"),
+        new OA\Response(response: 200, description: "Updated search query"),
+        new OA\Response(response: 404, description: "Not found"),
     ]
+)]
+
+    public function favoriteSearch($id, Request $request)
+    {
+        $data = $request->validate([
+            'is_favorite' => 'required|boolean',
+        ]);
+
+        $q = ChatSession::find($id);
+        if (!$q) return response()->json(['message' => 'Not found'], 404);
+
+        $q->is_favorite = (bool) $data['is_favorite'];
+        $q->save();
+
+        return response()->json($q);
+    }
+
+    #[OA\Get(
+    path: "/api/ai/sessions/{id}/export/excel",
+    summary: "Export AI chat session to Excel (.xlsx)",
+    tags: ["AI Chat"],
+    security: [["sanctum" => []]],
+    parameters: [
+        new OA\Parameter(name: "id", in: "path", required: true, schema: new OA\Schema(type: "integer")),
+    ],
+    responses: [
+        new OA\Response(response: 200, description: "XLSX file"),
+        new OA\Response(response: 404, description: "Not found"),
+    ]
+)]
+    public function exportExcel($id): BinaryFileResponse
+    {
+        $session = ChatSession::where('user_id', auth()->id())
+        ->with(['search_query', 'messages.feedback'])
+        ->find($id);
+
+        if (!$session) {
+            abort(404, 'Not found');
+        }
+
+        $fileName = 'ai_session_' . $session->id . '_' . now()->format('Ymd_His') . '.xlsx';
+
+        return Excel::download(new AiChatSessionExport($session), $fileName);
+    }
+
+#[OA\Get(
+    path: "/api/ai/sessions/{id}/export/pdf",
+    summary: "Export AI chat session to PDF",
+    tags: ["AI Chat"],
+    security: [["sanctum" => []]],
+    parameters: [
+        new OA\Parameter(name: "id", in: "path", required: true, schema: new OA\Schema(type: "integer")),
+    ],
+    responses: [
+        new OA\Response(response: 200, description: "PDF file"),
+        new OA\Response(response: 404, description: "Not found"),
+    ]
+)]
+public function exportPdf($id)
+{
+    $session = ChatSession::where('user_id', auth()->id())
+    ->with(['search_query', 'messages.feedback'])
+    ->find($id);
+
+    if (!$session) {
+        return response()->json(['message' => 'Not found'], 404);
+    }
+
+    $fileName = 'ai_session_' . $session->id . '_' . now()->format('Ymd_His') . '.pdf';
+
+    $pdf = Pdf::loadView('pdf.ai-session', [
+        'session' => $session,
+        'user' => auth()->user(),
+    ])->setPaper('a4');
+
+    return $pdf->download($fileName);
+}
+
+    #[OA\Post(
+path: "/api/ai/search",
+summary: "Create AI chat session from query (Recent Search with AI)",
+tags: ["AI Chat"],
+security: [["sanctum" => []]],
+requestBody: new OA\RequestBody(
+    required: true,
+    content: new OA\JsonContent(
+        required: ["query"],
+        properties: [
+            new OA\Property(property: "query", type: "string", example: "Where can I find the new GDPR compliance rules?"),
+            new OA\Property(property: "lang", type: "string", example: "en")
+        ]
+    )
+),
+responses: [
+    new OA\Response(response: 200, description: "Chat session with messages"),
+]
 )]
     public function search(Request $request)
     {
@@ -189,7 +292,7 @@ class AiChatController extends Controller
         $session->search_query->query = $request->message;
 
         $ai = AISearchService::make();
-        $answer = $ai->answer($session->fresh('messages', 'query'), $lang);
+        $answer = $ai->answer($session->fresh('messages'), $lang);
 
         $assistant = ChatMessage::create([
             'chat_session_id' => $session->id,
@@ -230,7 +333,7 @@ class AiChatController extends Controller
             'comment' => 'nullable|string|max:255',
         ]);
 
-          $request = (object)$request->all();
+        $request = (object)$request->all();
 
         $msg = ChatMessage::find($id);
         if (!$msg) return response()->json(['message' => 'Not found'], 404);

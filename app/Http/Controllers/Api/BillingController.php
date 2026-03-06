@@ -43,7 +43,8 @@ class BillingController extends Controller
                 'subscription.plan',
                 'subscription.plan.features',
                 'subscription.plan.prices',
-                'subscription.planPrice'
+                'subscription.planPrice',
+                'payments'
             ])
         );
     }

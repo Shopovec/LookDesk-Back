@@ -52,6 +52,7 @@ class CategoryController extends Controller
 
         $items->transform(function ($cat) use ($lang) {
             $cat->translated = $cat->getTranslation($lang);
+            $cat->documents_count = $cat->documents->count();
             return $cat;
         });
 

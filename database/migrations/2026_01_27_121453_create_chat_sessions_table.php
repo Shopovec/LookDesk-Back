@@ -10,6 +10,7 @@ return new class extends Migration {
         Schema::create('chat_sessions', function (Blueprint $table) {
             $table->id();
             $table->foreignId('user_id')->constrained()->cascadeOnDelete();
+            $table->boolean('is_favorite')->default(false);
             $table->foreignId('search_query_id')->constrained('search_queries')->cascadeOnDelete();
             $table->boolean('is_closed')->default(false);
             $table->timestamps();

@@ -146,6 +146,8 @@ class FunctionController extends Controller
             }
         }
 
+        $current_user->functions()->syncWithoutDetaching([$function->id]);
+
         Event::create([
             'user_id' => auth()->user()->id,
             'action'  => 'created',

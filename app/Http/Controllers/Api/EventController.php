@@ -22,6 +22,7 @@ class EventController extends Controller
      security: [["sanctum" => []]],
      parameters: [
         new OA\Parameter(name: "page", in: "query", schema: new OA\Schema(type: "integer")),
+        new OA\Parameter(name: "per_page", in: "query", schema: new OA\Schema(type: "integer")),
     ],
     responses: [
         new OA\Response(response: 200, description: "List of events")
@@ -29,8 +30,8 @@ class EventController extends Controller
 )]
     public function index(Request $request)
     {
-
-        $query = Event::query()->orderBy('created_at', 'DESC')->where('user_id', auth()->user()->id)->paginate(20);
+        $per_page = $request->get('per_page', 20);
+        $query = Event::query()->orderBy('created_at', 'DESC')->where('user_id', auth()->user()->id)->paginate($per_page);
 
         $query->transform(function ($event) {
             $event->title = $event->getTitle() ?? '';

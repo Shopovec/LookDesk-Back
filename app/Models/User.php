@@ -8,13 +8,15 @@ use Illuminate\Notifications\Notifiable;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Database\Eloquent\SoftDeletes;
 
-
-
 class User extends Authenticatable
 {
     use HasApiTokens, Notifiable, SoftDeletes;
 
     protected $fillable = [
+        'stripe_payment_method_id',
+        'payment_method_brand',
+        'payment_method_last4',
+        'payment_method_exp',
         'name',
         'email',
         'password',
@@ -25,11 +27,13 @@ class User extends Authenticatable
         'events_on',
         'stripe_customer_id',
         'verification_code',
-        'is_verified'
+        'is_verified',
+        'last_seen_at'
     ];
 
     protected $casts = [
         'settings' => 'array',
+        'last_seen_at' => 'datetime',
     ];
 
     protected $hidden = [
@@ -39,9 +43,25 @@ class User extends Authenticatable
 
     public function documents()
     {
-    // Document.created_by -> users.id
         return $this->hasMany(Document::class, 'created_by', 'id');
     }
+
+    public function sessions()
+    {
+        return $this->hasMany(ChatSession::class, 'user_id', 'id');
+    }
+
+    public function documentsTeam()
+    {
+        return $this->hasMany(Document::class, 'created_by', 'client_creator_id');
+    }
+
+    public function sessionsTeam()
+    {
+        return $this->hasMany(ChatSession::class, 'user_id', 'client_creator_id');
+    }
+
+
 
     public function clientUsers()
     {
@@ -106,6 +126,25 @@ class User extends Authenticatable
     public function subscription()
     {
         return $this->hasOne(\App\Models\Subscription::class);
+    }
+
+    public function payments()
+    {
+    // вся история оплат (invoice.payment_succeeded / failed)
+        return $this->hasMany(SubscriptionPayment::class, 'user_id', 'id');
+    }
+
+    public function paymentsPaid()
+    {
+    // только успешные
+        return $this->payments()->where('status', 'paid')->orderByDesc('paid_at');
+    }
+
+    public function lastPayment()
+    {
+    // последний платёж (Laravel 8+)
+        return $this->hasOne(SubscriptionPayment::class, 'user_id', 'id')
+        ->latestOfMany('paid_at');
     }
 
 

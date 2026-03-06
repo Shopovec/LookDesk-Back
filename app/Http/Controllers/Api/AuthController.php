@@ -14,6 +14,14 @@ use Illuminate\Support\Facades\Mail;
 class AuthController extends Controller
 {
     use ApiResponse;
+    public function __construct()
+    {
+        if (auth()->check()) {
+            auth()->user()->update([
+                'last_seen_at' => now()
+            ]);
+        }
+    }
 
     private function sendVerification(User $user)
     {
@@ -79,6 +87,10 @@ class AuthController extends Controller
         } else {
             $token = $user->createToken('api')->plainTextToken;
 
+             $user->update([
+                'last_seen_at' => now()
+            ]);
+
             return $this->success([
                 'token' => $token,
                 'user' => $user->load([
@@ -86,7 +98,8 @@ class AuthController extends Controller
                     'subscription.plan',
                     'subscription.plan.features',
                     'subscription.plan.prices',
-                    'subscription.planPrice'
+                    'subscription.planPrice',
+                    'payments'
                 ])
             ]);
         }
@@ -196,18 +209,23 @@ class AuthController extends Controller
                 'subscription.plan',
                 'subscription.plan.features',
                 'subscription.plan.prices',
-                'subscription.planPrice'
+                'subscription.planPrice',
+                 'payments'
             ])
         ]);
     } 
     public function me()
     {
+         auth()->user()->update([
+                'last_seen_at' => now()
+            ]);
         return $this->success(auth()->user()->load([
             'role',
             'subscription.plan',
             'subscription.plan.features',
             'subscription.plan.prices',
-            'subscription.planPrice'
+            'subscription.planPrice',
+            'payments'
         ]));
     }
 

@@ -3,10 +3,7 @@
 namespace App\Services;
 
 use App\Models\ChatSession;
-use App\Models\Document;
-use App\Models\DocumentEmbedding;
-use App\Models\SearchQuery;
-use App\Models\AiDocumentStat;
+use App\Models\DocumentTranslation;
 
 class AISearchService
 {
@@ -15,110 +12,48 @@ class AISearchService
         return new self();
     }
 
-    /* ===================== EMBEDDING ===================== */
-
-    public function embedQuery(SearchQuery $q): SearchQuery
+    /**
+     * Главный метод: LLM сама выбирает релевантные документы (в т.ч. RU->UA),
+     * затем мы подгружаем полные тексты и просим LLM ответить строго по ним.
+     */
+    public function answer(ChatSession $session, ?string $preferredLang = null): array
     {
-        if (!$q->embedding) {
-            $q->embedding = OpenAIClient::embed($q->query);
-            $q->save();
-        }
+        $userQuery = (string) ($session->search_query->query ?? '');
 
-        return $q;
-    }
+        // 1) Каталог: все переводы (или можно ограничить языком/количеством)
+        $catalogLimit = (int) config('ai.catalog_limit', 400);
+        $catalog = $this->getCatalog(null, $catalogLimit); // null => по всем языкам
 
-    /* ===================== SEARCH ===================== */
+        // 2) Пусть LLM выберет нужные document_id по смыслу
+        $pickDocs = (int) config('ai.pick_docs', 6);
+        $pickedIds = $this->pickDocIdsByLLM($userQuery, $catalog, $pickDocs);
 
-    public function findTopDocuments(array $queryVector, string $lang): array
-    {
-        $topK = config('ai.top_k');
-        $minScore = config('ai.min_score');
+        // 3) Грузим полные тексты выбранных документов (все языки или только preferredLang)
+        $docs = $this->loadFullDocs($pickedIds, $preferredLang);
 
-        $rows = DocumentEmbedding::where('lang', $lang)->get();
-        $stats = AiDocumentStat::all()->keyBy('document_id');
-
-        $scored = [];
-
-        foreach ($rows as $row) {
-
-            $sim = $this->cosine($queryVector, $row->embedding ?? []);
-            if ($sim < $minScore) continue;
-
-            $bias = $stats[$row->document_id]->bias ?? 0;
-
-            $final = $sim * (1 + $bias);
-
-            $scored[] = [
-                'document_id' => $row->document_id,
-                'score' => round($final, 5),
-                'similarity' => round($sim, 5),
-                'bias' => round($bias, 3),
-            ];
-        }
-
-        usort($scored, fn($a, $b) => $b['score'] <=> $a['score']);
-        $scored = array_slice($scored, 0, $topK);
-
-        if (!$scored) return [];
-
-        $docs = Document::with('translations')
-            ->whereIn('id', array_column($scored, 'document_id'))
-            ->get()
-            ->keyBy('id');
-
-        $out = [];
-
-        foreach ($scored as $item) {
-
-            $doc = $docs[$item['document_id']] ?? null;
-            if (!$doc) continue;
-
-            $tr = $doc->getTranslation($lang);
-
-            $out[] = [
-                'document_id' => $doc->id,
-                'score' => $item['score'],
-                'similarity' => $item['similarity'],
-                'bias' => $item['bias'],
-                'title' => $tr->title ?? '',
-                'snippet' => mb_substr($tr->content ?? '', 0, 1200),
-            ];
-        }
-
-        return $out;
-    }
-
-    /* ===================== CHAT ANSWER ===================== */
-
-    public function answer(ChatSession $session, string $lang): array
-    {
-        $query = $session->search_query;
-
-        $this->embedQuery($query);
-
-        $docs = $this->findTopDocuments($query->embedding, $lang);
+        // 4) Собираем контекст с лимитом, чтобы не упереться в токены
+        $maxChars = (int) config('ai.max_context_chars', 90000);
+        $context = $this->buildFullContext($docs, $maxChars);
 
         $system = <<<SYS
 You are LookDesk AI assistant.
-Answer strictly using provided knowledge base.
-If not found — say so clearly.
+Answer strictly using the DOCUMENTS below.
+If the answer is not found in the documents, say exactly: "Not found in knowledge base".
+Cite sources as (Doc ID: X, lang: Y).
 Keep answers short and structured.
 SYS;
 
-        $context = collect($docs)->map(fn($d, $i) =>
-            "### Doc ".($i+1)."\nTitle: {$d['title']}\n{$d['snippet']}"
-        )->implode("\n\n");
-
+        // История чата (если нужна)
         $history = $session->messages()
             ->orderBy('id')
-            ->get(['role','content'])
-            ->map(fn($m) => ['role'=>$m->role,'content'=>$m->content])
+            ->get(['role', 'content'])
+            ->map(fn ($m) => ['role' => $m->role, 'content' => $m->content])
             ->toArray();
 
         $messages = array_merge(
-            [['role'=>'system','content'=>$system."\n\nCONTEXT:\n".($context ?: 'No docs found')]],
+            [['role' => 'system', 'content' => $system . "\n\nDOCUMENTS:\n" . ($context ?: 'No docs found')]],
             $history,
-            [['role'=>'user','content'=>$query->query]]
+            [['role' => 'user', 'content' => $userQuery]]
         );
 
         $text = OpenAIClient::chat($messages);
@@ -126,28 +61,204 @@ SYS;
         return [
             'text' => $text,
             'meta' => [
-                'documents' => $docs,
-                'lang' => $lang,
-            ]
+                'picked_ids' => $pickedIds,
+                'catalog_count' => count($catalog),
+                'context_chars' => mb_strlen($context),
+                'preferred_lang' => $preferredLang,
+            ],
         ];
     }
 
-    /* ===================== VECTOR MATH ===================== */
+    /* ===================== CATALOG ===================== */
 
-    private function cosine(array $a, array $b): float
+    /**
+     * Каталог документов для первичного выбора (LLM-retrieval).
+     * Даем title + небольшой preview (чтобы модель поняла смысл).
+     *
+     * @param string|null $lang   если null — берем все языки
+     * @param int         $limit  сколько записей catalog отдавать в LLM
+     */
+    private function getCatalog(?string $lang = null, int $limit = 400): array
     {
-        $n = min(count($a), count($b));
-        if (!$n) return 0;
+        $q = DocumentTranslation::query()
+            ->select(['document_id', 'lang', 'title', 'content'])
+            ->orderByDesc('updated_at')
+            ->limit($limit);
 
-        $dot = $na = $nb = 0;
-
-        for ($i=0;$i<$n;$i++){
-            $dot += $a[$i]*$b[$i];
-            $na += $a[$i]**2;
-            $nb += $b[$i]**2;
+        if ($lang) {
+            $q->where('lang', $lang);
         }
 
-        return ($na && $nb) ? $dot / (sqrt($na)*sqrt($nb)) : 0;
+        return $q->get()
+            ->map(function ($t) {
+                return [
+                    'document_id' => (int) $t->document_id,
+                    'lang'        => (string) $t->lang,
+                    'title'       => (string) ($t->title ?? ''),
+                    'preview'     => $t->content ?? '',
+                ];
+            })
+            ->toArray();
     }
+
+    /* ===================== LLM PICK DOCS ===================== */
+
+    /**
+     * Просим LLM выбрать document_id по смыслу (включая RU->UA).
+     * Возвращаем массив IDs.
+     */
+    private function pickDocIdsByLLM(string $userQuery, array $catalog, int $pick = 6): array
+    {
+        $system = <<<SYS
+You are a retrieval assistant for a knowledge base.
+
+Select the most relevant documents for the user's query by searching BOTH:
+- title
+- content/preview
+
+If the query explicitly mentions an exact title (e.g. "Contract EN"), you MUST include that document if present.
+
+Return ONLY valid JSON in this exact format: {"ids":[123,456]}
+Return document_id values only. Never return list indexes.
+Pick up to {$pick} document_id values.
+SYS;
+
+$lines = [];
+foreach ($catalog as $d) {
+    $lines[] = json_encode([
+        'document_id' => (int)($d['document_id'] ?? 0),
+      //  'lang'        => (string)($d['lang'] ?? ''),
+        'title'       => $this->oneLine($d['title'] ?? ''),
+        'preview'     => $this->oneLine($d['preview'] ?? ''),
+    ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
 }
 
+$catalogText = implode("\n", $lines);
+
+$messages = [
+    ['role' => 'system', 'content' => $system],
+    ['role' => 'user', 'content' =>
+        "User query: {$userQuery}\n\nDOCUMENTS (one JSON per line):\n{$catalogText}"
+    ],
+];
+
+$raw  = OpenAIClient::chat($messages);
+$json = $this->extractJsonObject($raw);
+
+        $ids = $json['ids'] ?? [];
+        if (!is_array($ids)) $ids = [];
+
+        $ids = array_values(array_unique(array_filter($ids, fn($id) => is_numeric($id))));
+        $ids = array_map('intval', $ids);
+
+        return array_slice($ids, 0, $pick);
+    }
+
+    /* ===================== LOAD FULL DOCS ===================== */
+
+    /**
+     * Загружаем полные переводы выбранных document_id.
+     * Если $preferredLang задан — берем только этот язык, иначе берем все языки.
+     *
+     * Возвращает массив:
+     * [
+     *   12 => [
+     *     ['document_id'=>12,'lang'=>'uk','title'=>'...','content'=>'...'],
+     *     ['document_id'=>12,'lang'=>'ru','title'=>'...','content'=>'...'],
+     *   ],
+     *   ...
+     * ]
+     */
+    private function loadFullDocs(array $ids, ?string $preferredLang = null): array
+    {
+        if (!$ids) return [];
+
+        $q = DocumentTranslation::query()
+            ->whereIn('document_id', $ids)
+            ->select(['document_id', 'lang', 'title', 'content']);
+
+        if ($preferredLang) {
+            $q->where('lang', $preferredLang);
+        }
+
+        $rows = $q->get();
+
+        // Чтобы порядок был как выбрал LLM
+        $order = array_flip($ids);
+
+        $grouped = $rows->groupBy('document_id')->toArray();
+        uksort($grouped, function($a, $b) use ($order) {
+            return ($order[$a] ?? 999999) <=> ($order[$b] ?? 999999);
+        });
+
+        // Нормализуем структуру
+        $out = [];
+        foreach ($grouped as $docId => $items) {
+            $out[(int)$docId] = array_map(function($r){
+                return [
+                    'document_id' => (int) $r['document_id'],
+                    'lang'        => (string) $r['lang'],
+                    'title'       => (string) ($r['title'] ?? ''),
+                    'content'     => (string) ($r['content'] ?? ''),
+                ];
+            }, $items);
+        }
+
+        return $out;
+    }
+
+    /* ===================== CONTEXT BUILD ===================== */
+
+    private function buildFullContext(array $docsById, int $maxChars): string
+    {
+        $used = 0;
+        $parts = [];
+
+        foreach ($docsById as $docId => $translations) {
+            foreach ($translations as $t) {
+                $block =
+                    "### Doc ID: {$t['document_id']}\n" .
+                    "Lang: {$t['lang']}\n" .
+                    "Title: {$t['title']}\n" .
+                    "Content:\n{$t['content']}\n";
+
+                $len = mb_strlen($block);
+                if ($used + $len > $maxChars) {
+                    break 2;
+                }
+
+                $parts[] = $block;
+                $used += $len;
+            }
+        }
+
+        return implode("\n\n", $parts);
+    }
+
+    /* ===================== HELPERS ===================== */
+
+    private function oneLine(string $s): string
+    {
+        $s = str_replace(["\r\n", "\n", "\r", "\t"], ' ', $s);
+        $s = preg_replace('/\s+/u', ' ', $s);
+        return trim($s);
+    }
+
+    /**
+     * Достаёт первый JSON-объект из ответа модели.
+     */
+    private function extractJsonObject(string $text): array
+    {
+        // иногда модель может обрамлять ```json ... ```
+        $text = trim($text);
+        $text = preg_replace('/^```json\s*/i', '', $text);
+        $text = preg_replace('/```$/', '', $text);
+
+        if (preg_match('/\{.*\}/s', $text, $m)) {
+            $decoded = json_decode($m[0], true);
+            return is_array($decoded) ? $decoded : [];
+        }
+
+        return [];
+    }
+}

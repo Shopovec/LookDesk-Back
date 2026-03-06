@@ -5,6 +5,11 @@ return [
     'chat_model'  => env('OLLAMA_CHAT_MODEL', 'llama3.1:8b'),
     'embed_model' => env('OLLAMA_EMBED_MODEL', 'nomic-embed-text'),
 
-    'top_k'      => (int) env('AI_TOP_K', 5),
-    'min_score'  => (float) env('AI_MIN_SCORE', 0.35),
+    'top_k' => 6,
+
+    // минимальная релевантность FULLTEXT (подбирается экспериментально)
+    'min_score_text' => 0.0,
+
+    // лимит контекста в символах (поставь 60-120k)
+    'max_context_chars' => 80000,
 ];
