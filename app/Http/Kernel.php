@@ -40,7 +40,6 @@ class Kernel extends HttpKernel
         ],
 
         'api' => [
-            \App\Http\Middleware\UpdateUserLastSeen::class,
             //'throttle:api',
             \Illuminate\Routing\Middleware\SubstituteBindings::class,
              \App\Http\Middleware\ForceJson::class,
@@ -59,6 +58,7 @@ class Kernel extends HttpKernel
      * @var array
      */
     protected $routeMiddleware = [
+        'update_last_seen' => \App\Http\Middleware\UpdateUserLastSeen::class,
         'auth' => \App\Http\Middleware\Authenticate::class,
         'auth.basic' => \Illuminate\Auth\Middleware\AuthenticateWithBasicAuth::class,
         'cache.headers' => \Illuminate\Http\Middleware\SetCacheHeaders::class,

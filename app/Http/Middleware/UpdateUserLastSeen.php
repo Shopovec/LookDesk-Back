@@ -8,8 +8,8 @@ class UpdateUserLastSeen
     public function handle($request, Closure $next)
     {
 
-        if (auth()->check()) {
-            auth()->user()->update([
+         if ($request->user()) {
+            $request->user()->update([
                 'last_seen_at' => now()
             ]);
         }

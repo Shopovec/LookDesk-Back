@@ -16,11 +16,6 @@ class AuthController extends Controller
     use ApiResponse;
     public function __construct()
     {
-        if (auth()->check()) {
-            auth()->user()->update([
-                'last_seen_at' => now()
-            ]);
-        }
     }
 
     private function sendVerification(User $user)
@@ -86,10 +81,6 @@ class AuthController extends Controller
             return $this->success(null, 'Verification code sent to email', 201);
         } else {
             $token = $user->createToken('api')->plainTextToken;
-
-             $user->update([
-                'last_seen_at' => now()
-            ]);
 
             return $this->success([
                 'token' => $token,
@@ -216,9 +207,6 @@ class AuthController extends Controller
     } 
     public function me()
     {
-         auth()->user()->update([
-                'last_seen_at' => now()
-            ]);
         return $this->success(auth()->user()->load([
             'role',
             'subscription.plan',

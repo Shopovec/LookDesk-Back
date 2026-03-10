@@ -22,9 +22,6 @@ class PlanController extends Controller
 
     private function adminOnly()
     {
-        if (!in_array(auth()->user()->role_id, [1, 2])) {
-            abort(403, 'Forbidden');
-        }
     }
 
     /* =====================================================

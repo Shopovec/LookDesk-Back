@@ -28,11 +28,7 @@ class UserController extends Controller
     use ApiResponse;
     public function __construct()
     {
-        if (auth()->check()) {
-            auth()->user()->update([
-                'last_seen_at' => now()
-            ]);
-        }
+        
     }
 
     private string $redirectUrl = 'https://admin.lookdesk.ai/';
@@ -203,11 +199,6 @@ class UserController extends Controller
     {
         $code = random_int(100000, 999999);
 
-        $user->update([
-            'verification_code' => $code,
-            'is_verified' => false,
-        ]);
-
         Mail::raw("Your verification code: {$code}", function ($m) use ($user) {
             $m->to($user->email)->subject('Verify your account');
         });
@@ -317,7 +308,7 @@ class UserController extends Controller
 
         $me = auth()->user();
 
-        if ($me->hasRole('user') || $me->hasRole('client') || $me->hasRole('owner')) {
+        if ($me->hasRole('user') || $me->hasRole('client') || $me->hasRole('owner') || $me->hasRole('superadmin')) {
             $query->where(function ($q) use ($me) {
                 $q->where('client_creator_id', $me->id)
               ->orWhere('id', $me->id); // ✅ добавить себя
@@ -391,8 +382,8 @@ if ($user->deleted_at) {
     $user->status = 'active';
 }
             if ($user->hasRole('owner')) {
-                $user->documents_team_count = (int) $user->documents_team_count;
-                $user->sessions_team_chat_count = (int) $user->sessions_team_chat_count;
+                $user->documents_team_count = (int) $user->documents_team_count + $user->documents_count;
+                $user->sessions_team_chat_count = (int) $user->sessions_team_chat_count + $user->sessions_chat_count;
                 $user->client_users_count = (int) $user->client_users_count;
                 $user->economist_30_last = $this->aiEconomics($user->id);
                 $user->active_users_last_30_days = $this->activeUsersLast30Days($user->id);
@@ -400,6 +391,233 @@ if ($user->deleted_at) {
             }
             return $user;
         }));
+    }
+
+
+    /* ============================================================
+     | GET USERS LIST
+     ============================================================ */
+    #[OA\Get(
+     path: "/api/team-users/{id}",
+     summary: "Get team users list",
+     tags: ["Users"],
+     security: [["sanctum" => []]],
+     parameters: [
+        new OA\Parameter(name: "id", in: "path", schema: new OA\Schema(type: "integer")),
+    ],
+    responses: [
+        new OA\Response(response: 200, description: "List of users")
+    ]
+)]
+    public function teamUsers($id, Request $request)
+    {
+        $me = User::find($id);
+
+        $query = User::query()->withCount([
+            'documents as documents_count',
+            'sessions as sessions_chat_count',
+            'documentsTeam as documents_team_count',
+            'sessionsTeam as sessions_team_chat_count',
+            'clientUsers as client_users_count',
+        ])->with('role', 'functions',
+        'subscription.plan',
+        'subscription.plan.features',
+        'subscription.plan.prices',
+        'subscription.planPrice',
+        'payments');
+
+
+        if ($me->hasRole('owner') || $me->hasRole('superadmin')) {
+             $query->where(function ($q) use ($me) {
+                $q->where('client_creator_id', $me->id)
+              ->orWhere('id', $me->id); // ✅ добавить себя
+          });
+         } else {
+             $query->where(function ($q) use ($me) {
+                $q->where('client_creator_id', $me->client_creator_id)
+              ->orWhere('id', $me->client_creator_id); // ✅ добавить себя
+          });
+         }
+
+
+        return $this->success($query->paginate(20)->getCollection()->transform(function ($user) {
+            $user->documents_count = (int) $user->documents_count;
+            $user->sessions_chat_count = (int) $user->sessions_chat_count;
+           $user->is_online = $user->last_seen_at
+    ? strtotime($user->last_seen_at) > now()->subMinutes(5)->timestamp
+    : false;
+
+if ($user->deleted_at) {
+    $user->status = 'inactive';
+} elseif (!$user->is_verified) {
+    $user->status = 'pending';
+} else {
+    $user->status = 'active';
+}
+            if ($user->hasRole('owner')) {
+                $user->documents_team_count = (int) $user->documents_team_count + $user->documents_count;
+                $user->sessions_team_chat_count = (int) $user->sessions_team_chat_count + $user->sessions_chat_count;
+                $user->client_users_count = (int) $user->client_users_count;
+                $user->economist_30_last = $this->aiEconomics($user->id);
+                $user->active_users_last_30_days = $this->activeUsersLast30Days($user->id);
+                $user->deleted_users_last_30_days =  $this->trashedUsersLast30Days($user->id);
+            }
+            return $user;
+        }));
+    }
+
+    /* ============================================================
+     | GET USERS LIST
+     ============================================================ */
+    #[OA\Get(
+     path: "/api/users-superadmin",
+     summary: "Get users list",
+     tags: ["Users"],
+     security: [["sanctum" => []]],
+     parameters: [
+        new OA\Parameter(name: "search", in: "query", schema: new OA\Schema(type: "string")),
+        new OA\Parameter(name: "username", in: "query", schema: new OA\Schema(type: "string")),
+        new OA\Parameter(name: "email", in: "query", schema: new OA\Schema(type: "string")),
+        new OA\Parameter(
+            name: "status",
+            in: "query",
+            description: "User status filter",
+            schema: new OA\Schema(
+                type: "string",
+                enum: ["active","inactive","pending","deleted"]
+            )
+        ),
+        new OA\Parameter(name: "role_id", in: "query", schema: new OA\Schema(type: "integer")),
+        new OA\Parameter(name: "role", in: "query", schema: new OA\Schema(type: "string")),
+        new OA\Parameter(name: "function_id", in: "query", schema: new OA\Schema(type: "integer")),
+        new OA\Parameter(name: "page", in: "query", schema: new OA\Schema(type: "integer")),
+    ],
+    responses: [
+        new OA\Response(response: 200, description: "List of users")
+    ]
+)]
+    public function index2(Request $request)
+    {
+        $user = auth()->user();
+        // Разрешаем только: super admin, admin, owner
+        if (!in_array((int)$user->role_id, [7], true)) {
+            return $this->error('Forbidden', 403);
+        // или abort(403);
+        }
+
+        $query = User::query()->withCount([
+            'documents as documents_count',
+            'sessions as sessions_chat_count',
+            'documentsTeam as documents_team_count',
+            'sessionsTeam as sessions_team_chat_count',
+            'clientUsers as client_users_count',
+        ])->with('role', 'functions',
+        'subscription.plan',
+        'subscription.plan.features',
+        'subscription.plan.prices',
+        'subscription.planPrice',
+        'payments');
+
+        if ($request->username) {
+            $query->where('name', 'like', "%{$request->username}%");
+        }
+
+        if ($request->email) {
+            $query->where('email', 'like', "%{$request->email}%");
+        }
+
+        if ($request->search) {
+            $query->where(function ($q) use ($request) {
+                $q->where('name', 'like', "%{$request->search}%")
+                ->orWhere('email', 'like', "%{$request->search}%");
+            });
+        }
+
+        if ($request->status) {
+
+            switch ($request->status) {
+
+                case 'active':
+                $query->where('is_verified', true)
+                ->whereNull('deleted_at');
+                break;
+
+                case 'pending':
+                $query->where('is_verified', false)
+                ->whereNull('deleted_at');
+                break;
+
+                case 'inactive':
+                $query->onlyTrashed();
+                break;
+            }
+
+        }
+
+        if ($request->role) {
+            $roleId = Role::where('name', strtolower($request->role))->first()->id;
+            $query->where('role_id', $roleId);
+        }
+
+        if ($request->role_id) {
+            $query->where('role_id', $request->role_id);
+        }
+
+        if ($request->function_id) {
+            $query->whereHas('functions', fn($x) =>
+                $x->where('functions.id', $request->function_id)
+            );
+        }
+
+
+        return $this->success($query->paginate(20)->getCollection()->transform(function ($user) {
+            $user->documents_count = (int) $user->documents_count;
+            $user->sessions_chat_count = (int) $user->sessions_chat_count;
+           $user->is_online = $user->last_seen_at
+    ? strtotime($user->last_seen_at) > now()->subMinutes(5)->timestamp
+    : false;
+
+if ($user->deleted_at) {
+    $user->status = 'inactive';
+} elseif (!$user->is_verified) {
+    $user->status = 'pending';
+} else {
+    $user->status = 'active';
+}
+            if ($user->hasRole('owner')) {
+                $user->documents_team_count = (int) $user->documents_team_count + $user->documents_count;
+                $user->sessions_team_chat_count = (int) $user->sessions_team_chat_count + $user->sessions_chat_count;
+                $user->client_users_count = (int) $user->client_users_count;
+                $user->economist_30_last = $this->aiEconomics($user->id);
+                $user->active_users_last_30_days = $this->activeUsersLast30Days($user->id);
+                $user->deleted_users_last_30_days =  $this->trashedUsersLast30Days($user->id);
+            }
+            return $user;
+        }));
+    }
+
+
+     /* ============================================================
+     | GET USERS LIST
+     ============================================================ */
+    #[OA\Get(
+     path: "/api/users/deleted",
+     summary: "Get users list",
+     tags: ["Users"],
+     security: [["sanctum" => []]],
+      parameters: [
+        new OA\Parameter(name: "page", in: "query", schema: new OA\Schema(type: "integer")),
+    ],
+    responses: [
+        new OA\Response(response: 200, description: "List of users")
+    ]
+)]
+    public function deleted(Request $request)
+    {
+        $query = User::onlyTrashed();
+
+
+        return $this->success($query->paginate(20));
     }
 
       /* ======================================================

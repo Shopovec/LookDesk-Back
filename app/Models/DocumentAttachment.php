@@ -6,14 +6,10 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\Storage;
 
 
-class DocumentTranslation extends Model
+class DocumentAttachment extends Model
 {
     protected $fillable = [
         'document_id',
-        'lang',
-        'title',
-        'content',
-        'summary',
         'file'
     ];
 

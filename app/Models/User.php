@@ -51,17 +51,39 @@ class User extends Authenticatable
         return $this->hasMany(ChatSession::class, 'user_id', 'id');
     }
 
+    public function teamUsers()
+    {
+    // users.client_creator_id = this.id
+        return $this->hasMany(User::class, 'client_creator_id', 'id');
+    }
+
     public function documentsTeam()
     {
-        return $this->hasMany(Document::class, 'created_by', 'client_creator_id');
+    // users.client_creator_id = this.id
+    // documents.created_by = users.id
+        return $this->hasManyThrough(
+            Document::class,
+            User::class,
+        'client_creator_id', // FK на users (team)
+        'created_by',        // FK на documents
+        'id',                // this.id
+        'id'                 // users.id
+    );
     }
 
     public function sessionsTeam()
     {
-        return $this->hasMany(ChatSession::class, 'user_id', 'client_creator_id');
+    // users.client_creator_id = this.id
+    // chat_sessions.user_id = users.id
+        return $this->hasManyThrough(
+            ChatSession::class,
+            User::class,
+        'client_creator_id', // FK на users (team)
+        'user_id',           // FK на chat_sessions
+        'id',                // this.id
+        'id'                 // users.id
+    );
     }
-
-
 
     public function clientUsers()
     {

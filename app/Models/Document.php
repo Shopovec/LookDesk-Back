@@ -4,6 +4,7 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
 use App\Traits\HasTranslations;
+use Illuminate\Support\Facades\Storage;
 
 class Document extends Model
 {
@@ -21,6 +22,14 @@ class Document extends Model
         'only_view'
     ];
 
+    protected $appends = ['main_file_url'];
+
+    public function getMainFileUrlAttribute()
+    {
+        return $this->file_path ? url(Storage::url($this->file_path)) : null;
+
+    }
+
     protected $casts = [
         'meta' => 'array',
         'is_favorite' => 'boolean',
@@ -32,6 +41,11 @@ class Document extends Model
     public function translations()
     {
         return $this->hasMany(DocumentTranslation::class);
+    }
+
+    public function attachments()
+    {
+        return $this->hasMany(DocumentAttachment::class);
     }
 
     public function categories()

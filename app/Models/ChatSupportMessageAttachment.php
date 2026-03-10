@@ -6,22 +6,18 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\Storage;
 
 
-class DocumentTranslation extends Model
+class ChatSupportMessageAttachment extends Model
 {
     protected $fillable = [
-        'document_id',
-        'lang',
-        'title',
-        'content',
-        'summary',
+        'chat_support_message_id',
         'file'
     ];
 
     protected $appends = ['file_url'];
 
-    public function document()
+    public function message()
     {
-        return $this->belongsTo(Document::class);
+        return $this->belongsTo(ChatSupportMessage::class);
     }
 
 

@@ -35,7 +35,7 @@ Route::prefix('auth')->group(function () {
 
 });
 
-Route::prefix('owner-change')->middleware('auth:sanctum')->group(function () {
+Route::prefix('owner-change')->middleware(['auth:sanctum', 'update_last_seen'])->group(function () {
 
     Route::get('/', [OwnerChangeRequestController::class, 'index']);
     Route::post('/', [OwnerChangeRequestController::class, 'store']);
@@ -44,9 +44,9 @@ Route::prefix('owner-change')->middleware('auth:sanctum')->group(function () {
 
 });
 
-Route::middleware('auth:sanctum')->group(function () {
+Route::middleware(['auth:sanctum', 'update_last_seen'])->group(function () {
     Route::put('/ai/sessions/{id}/favorite', [AiChatController::class, 'favoriteSearch'])
-    ->middleware('auth:sanctum');
+    ->middleware(['auth:sanctum', 'update_last_seen']);
     Route::get('/ai/sessions/{id}/export/excel', [AiChatController::class, 'exportExcel']);
     Route::get('/ai/sessions/{id}/export/pdf',   [AiChatController::class, 'exportPdf']);
     Route::post('ai/search', [AiChatController::class, 'search']);
@@ -59,16 +59,21 @@ Route::middleware('auth:sanctum')->group(function () {
 
 Route::get('team-invitations/accept', [UserController::class, 'accept']);
 Route::get('users/{id}/download/pdf', [UserController::class, 'downloadPDF']);
-    Route::get('users/{id}/download/xsl', [UserController::class, 'downloadXsl']);
-    Route::get('documents/{id}/download/pdf', [DocumentController::class, 'downloadPDF']);
-    Route::get('documents/{id}/download/xsl', [DocumentController::class, 'downloadXsl']);
-Route::middleware('auth:sanctum')->group(function () {
+Route::get('users/{id}/download/xsl', [UserController::class, 'downloadXsl']);
+Route::get('documents/{id}/download/pdf', [DocumentController::class, 'downloadPDF']);
+Route::get('documents/{id}/download/xsl', [DocumentController::class, 'downloadXsl']);
+Route::middleware(['auth:sanctum', 'update_last_seen'])->group(function () {
 
     Route::prefix('support')->group(function () {
         Route::get('chats', [SupportChatController::class,'index']);
         Route::post('chats', [SupportChatController::class,'create']);
+        Route::get('chats/current', [SupportChatController::class,'current']);
+        Route::delete('chats/current/clear', [SupportChatController::class,'clearChatCurrent']);
         Route::get('chats/{id}', [SupportChatController::class,'show']);
+        Route::delete('chats/{id}/clear', [SupportChatController::class,'clearChat']);
+        Route::post('chats/current/message', [SupportChatController::class,'sendMessageCurrent']);
         Route::post('chats/{id}/message', [SupportChatController::class,'sendMessage']);
+
         Route::post('chats/{id}/close', [SupportChatController::class,'close']);
     });
 
@@ -80,6 +85,10 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('top_search_documents', [DashboardController::class, 'top_search_documents']);
 
     // Users
+    Route::get('users/deleted',       [UserController::class, 'deleted']);
+    
+    Route::get('users-superadmin',       [UserController::class, 'index2']);
+    Route::get('team-users/{id}',  [UserController::class, 'teamUsers']);
     Route::get('users',       [UserController::class, 'index']);
     Route::get('users/{id}',  [UserController::class, 'show']);
     Route::post('users',      [UserController::class, 'store']);
@@ -113,13 +122,14 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('documents/{id}/translations', [DocumentTranslationController::class, 'store']);
     Route::put('translations/{id}', [DocumentTranslationController::class, 'update']);
     Route::delete('translations/{id}', [DocumentTranslationController::class, 'destroy']);
+    Route::delete('delete_attachment/{id}', [DocumentController::class, 'delete_attachment']);
 
     // OCR
     Route::post('ocr/scan', [OcrController::class, 'scan']);
     Route::get('ocr/list',  [OcrController::class, 'list']);
 });
 
-Route::middleware('auth:sanctum')->prefix('admin')->group(function () {
+Route::middleware(['auth:sanctum', 'update_last_seen'])->prefix('admin')->group(function () {
     Route::apiResource('plans', \App\Http\Controllers\Api\Admin\PlanController::class);
 });
 
@@ -128,7 +138,7 @@ Route::post('/stripe/webhook', [
     'webhook'
 ]);
 
-Route::middleware('auth:sanctum')->group(function () {
+Route::middleware(['auth:sanctum', 'update_last_seen'])->group(function () {
 
     Route::prefix('billing')->group(function () {
 
@@ -151,7 +161,7 @@ Route::post(
 );
 
 /* admin */
-Route::middleware('auth:sanctum')->prefix('admin')->group(function () {
+Route::middleware(['auth:sanctum', 'update_last_seen'])->prefix('admin')->group(function () {
     Route::get(
         '/enterprise-requests',
         [EnterpriseRequestController::class, 'index']

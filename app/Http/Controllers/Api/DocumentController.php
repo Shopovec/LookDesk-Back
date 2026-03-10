@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Models\Document;
 use App\Models\DocumentTranslation;
+use App\Models\DocumentAttachment;
 use App\Models\Event;
 use App\Traits\ApiResponse;
 use Illuminate\Http\Request;
@@ -87,7 +88,7 @@ class DocumentController extends Controller
     {
         $lang = $request->get('lang', 'en');
 
-        $q = Document::with(['translations','categories','functions']);
+        $q = Document::with(['translations','attachments','categories','functions']);
 
         if ($request->category_id) {
             $q->whereHas('categories', fn($x) =>
@@ -112,24 +113,24 @@ class DocumentController extends Controller
 
         $items->transform(function ($doc) use ($lang) {
 
-         DocumentView::create([
+           DocumentView::create([
             'document_id' => $doc->id,
             'user_id' => auth()->id()
         ]);
 
-         $doc->translated = $doc->getTranslation($lang);
+           $doc->translated = $doc->getTranslation($lang);
 
-         $doc->views_last_30_days = $doc->views()
-         ->where('created_at','>=',now()->subDays(30))
-         ->count();
+           $doc->views_last_30_days = $doc->views()
+           ->where('created_at','>=',now()->subDays(30))
+           ->count();
 
-         $doc->ai_searches_last_30_days = isset($doc->translated['title']) ? ChatMessage::where('role','user')
-         ->where('created_at','>=',now()->subDays(30))
-         ->where('content','like','%'.$doc->translated['title'].'%')
-         ->count() : 0;
+           $doc->ai_searches_last_30_days = isset($doc->translated['title']) ? ChatMessage::where('role','user')
+           ->where('created_at','>=',now()->subDays(30))
+           ->where('content','like','%'.$doc->translated['title'].'%')
+           ->count() : 0;
 
-         return $doc;
-     });
+           return $doc;
+       });
 
         // ✅ EXPORT XLSX
         if ($request->isExportXSL) {
@@ -152,26 +153,99 @@ class DocumentController extends Controller
         return $this->success($items);
     }
 
-#[OA\Post(
-    path: "/api/documents",
-    summary: "Create document with translations (each with its own file)",
-    tags: ["Documents"],
-    security: [["sanctum" => []]],
-    requestBody: new OA\RequestBody(
-        required: true,
-        content: new OA\MediaType(
-            mediaType: "multipart/form-data",
-            schema: new OA\Schema(
-                type: "object",
-                properties: [
-                    new OA\Property(
-                        property: "is_public",
-                        type: "boolean",
-                        example: true
-                    ),
+    private function convertPdfToPng(string $pdfPath): ?string
+    {
+        $dir = storage_path('app/public/ocr');
 
-                    new OA\Property(property: "only_view", type: "boolean"),
-                    new OA\Property(property: "confidential", type: "boolean"),
+        if (!is_dir($dir)) {
+            mkdir($dir, 0775, true);
+        }
+
+        $base = $dir . '/' . uniqid('pdf_');
+
+        $cmd = sprintf(
+            'pdftoppm -png -f 1 -l 1 %s %s 2>&1',
+            escapeshellarg($pdfPath),
+            escapeshellarg($base)
+        );
+
+        exec($cmd, $out, $status);
+
+        $files = glob($base . '-*.png');
+
+        if (!$files || !file_exists($files[0])) {
+            \Log::error('pdftoppm failed', [
+                'cmd' => $cmd,
+                'output' => $out,
+                'status' => $status,
+            ]);
+            return null;
+        }
+
+$imagePath = $files[0]; // первая страница
+
+return $imagePath;
+}
+private function mapLangForTesseract(string $lang): string
+{
+    $lang = strtolower($lang);
+
+    return match ($lang) {
+        'en', 'eng' => 'eng',
+        'ru', 'rus' => 'rus',
+        'uk', 'ua', 'ukr' => 'ukr',
+        default => 'eng',
+    };
+}
+
+private function runTesseract(string $imagePath, string $lang): string
+{
+    $outputBase = $imagePath . "_ocr";
+
+    $cmd = sprintf(
+        'tesseract %s %s -l %s 2>&1',
+        escapeshellarg($imagePath),
+        escapeshellarg($outputBase),
+        escapeshellarg($lang),
+    );
+
+    $out = [];
+    $status = 0;
+    exec($cmd, $out, $status);
+
+    if ($status !== 0) {
+        \Log::error('Tesseract failed', [
+            'cmd'    => $cmd,
+            'status' => $status,
+            'output' => $out,
+        ]);
+        return '';
+    }
+
+    $txt = $outputBase . ".txt";
+    return file_exists($txt) ? trim(file_get_contents($txt)) : "";
+}
+
+#[OA\Post(
+path: "/api/documents",
+summary: "Create document with translations (each with its own file)",
+tags: ["Documents"],
+security: [["sanctum" => []]],
+requestBody: new OA\RequestBody(
+    required: true,
+    content: new OA\MediaType(
+        mediaType: "multipart/form-data",
+        schema: new OA\Schema(
+            type: "object",
+            properties: [
+                new OA\Property(
+                    property: "is_public",
+                    type: "boolean",
+                    example: true
+                ),
+
+                new OA\Property(property: "only_view", type: "boolean"),
+                new OA\Property(property: "confidential", type: "boolean"),
                       /* ==========================================================
                      * ARRAY: translations[0][lang], translations[0][file]
                      * ========================================================== */
@@ -207,6 +281,20 @@ class DocumentController extends Controller
                         format: "binary",
                         description: "Main document file (PDF/DOCX/Image)"
                     ),
+
+                      new OA\Property(
+                        property: "attachments[0][file]",
+                        type: "string",
+                        format: "binary",
+                        description: "attachment 1 for document"
+                    ), 
+
+                      new OA\Property(
+                        property: "attachments[1][file]",
+                        type: "string",
+                        format: "binary",
+                        description: "attachment 2 for document"
+                    ),  
 
                     /* ==========================================================
                      * ARRAY: translations[0][lang], translations[0][file]
@@ -265,99 +353,28 @@ class DocumentController extends Controller
 
                 ]
             )
-        )
-    ),
-    responses: [
-        new OA\Response(response: 201, description: "Created")
-    ]
+)
+),
+responses: [
+    new OA\Response(response: 201, description: "Created")
+]
 )]
-private function convertPdfToPng(string $pdfPath): ?string
-{
-    $dir = storage_path('app/public/ocr');
-
-    if (!is_dir($dir)) {
-        mkdir($dir, 0775, true);
-    }
-
-    $base = $dir . '/' . uniqid('pdf_');
-
-    $cmd = sprintf(
-        'pdftoppm -png -f 1 -l 1 %s %s 2>&1',
-        escapeshellarg($pdfPath),
-        escapeshellarg($base)
-    );
-
-    exec($cmd, $out, $status);
-
-    $files = glob($base . '-*.png');
-
-    if (!$files || !file_exists($files[0])) {
-        \Log::error('pdftoppm failed', [
-            'cmd' => $cmd,
-            'output' => $out,
-            'status' => $status,
-        ]);
-        return null;
-    }
-
-$imagePath = $files[0]; // первая страница
-
-return $imagePath;
-}
-private function mapLangForTesseract(string $lang): string
-{
-    $lang = strtolower($lang);
-
-    return match ($lang) {
-        'en', 'eng' => 'eng',
-        'ru', 'rus' => 'rus',
-        'uk', 'ua', 'ukr' => 'ukr',
-        default => 'eng',
-    };
-}
-
-private function runTesseract(string $imagePath, string $lang): string
-{
-    $outputBase = $imagePath . "_ocr";
-
-    $cmd = sprintf(
-        'tesseract %s %s -l %s 2>&1',
-        escapeshellarg($imagePath),
-        escapeshellarg($outputBase),
-        escapeshellarg($lang),
-    );
-
-    $out = [];
-    $status = 0;
-    exec($cmd, $out, $status);
-
-    if ($status !== 0) {
-        \Log::error('Tesseract failed', [
-            'cmd'    => $cmd,
-            'status' => $status,
-            'output' => $out,
-        ]);
-        return '';
-    }
-
-    $txt = $outputBase . ".txt";
-    return file_exists($txt) ? trim(file_get_contents($txt)) : "";
-}
 public function store(Request $request)
 {
-    $this->checkOwnerAdmin();
-
     $request->validate([
         'is_public'             => 'nullable|in:0,1,true,false,TRUE,FALSE,True,False',
         'only_view'             => 'nullable|in:0,1,true,false,TRUE,FALSE,True,False',
         'confidential'             => 'nullable|in:0,1,true,false,TRUE,FALSE,True,False',
 
+        'file' => 'nullable|file',
+
+
         'categories'          => 'required|array',
         'categories.*.id'   => 'required|integer',
         'functions'          => 'required|array',
         'functions.*.id'   => 'required|integer',
-
-
+        'attachments'          => 'nullable|array',
+        'attachments.*.file' => 'nullable|file',
         'translations'          => 'required|array',
         'translations.*.lang'   => 'required|string|in:en,ru,uk',
         'translations.*.title'  => 'required|string|max:255',
@@ -380,28 +397,63 @@ public function store(Request $request)
         'slug'        => Str::slug($request->translations[0]['title'] ?? Str::random(8)),
     ]);
 
+    if ($request->hasFile('file')) {
+
+        $file = $request->file('file');
+
+        $name = $file->getClientOriginalName();
+
+        $path = $file->storeAs('documents', $name, 'public');
+
+        $ext  = strtolower($request->file('file')->getClientOriginalExtension());
+
+        $document->file_path = $path;
+        $document->save();
+    }
+
 
     $document->categories()->sync($categories ?? []);
     $document->functions()->sync($functions ?? []);
 
+    foreach ($request->attachments as $t) {
 
-    foreach ($request->translations as $t) {
 
-    // 1. Текст по умолчанию из description
-        $text = '';
-
-        $path = null;
-        $ext  = null;
-
-    // 2. Если передан файл — OCR
         if (!empty($t['file'])) {
 
-            $path = $t['file']->store('ocr', 'public');
-            $fullPath = storage_path('app/public/' . $path);
+         $file = $t['file'];
+
+         $name = $file->getClientOriginalName();
+
+         $path = $file->storeAs('attacments', $name, 'public');
+
+         DocumentAttachment::create([
+            'document_id' => $document->id,'file' =>  $path ]);
+
+     }
+ }
 
 
-            if (!file_exists($fullPath)) {
-                \Log::error('OCR file missing', ['path' => $fullPath]);
+ foreach ($request->translations as $t) {
+
+    // 1. Текст по умолчанию из description
+    $text = '';
+
+    $path = null;
+    $ext  = null;
+
+    // 2. Если передан файл — OCR
+    if (!empty($t['file'])) {
+
+     $file = $t['file'];
+
+     $name = $file->getClientOriginalName();
+
+     $path = $file->storeAs('ocr', $name, 'public');
+     $fullPath = storage_path('app/public/' . $path);
+
+
+     if (!file_exists($fullPath)) {
+        \Log::error('OCR file missing', ['path' => $fullPath]);
             continue; // не валим весь запрос
         }
 
@@ -476,6 +528,7 @@ public function store(Request $request)
         'document_id' => $document->id,
         'lang'        => $t['lang'],
         'title'       => $t['title'],
+        'file'        => $path,
         'content'     => $text,
         'summary' => $t['description'], 
             'file_path'   => $path,        // лучше сохранить относительный (из store)
@@ -494,7 +547,7 @@ Event::create([
     'model_id' => $document->id,
 ]);
 
-return $this->success($document->load('translations','categories','functions'), "Created", 201);
+return $this->success($document->load('translations','attachments','categories','functions'), "Created", 201);
 }
 
      /* ======================================================
@@ -633,6 +686,20 @@ return $this->success($document->load('translations','categories','functions'), 
                     ),
 
                       new OA\Property(
+                        property: "attachments[0][file]",
+                        type: "string",
+                        format: "binary",
+                        description: "attachment 1 for document"
+                    ), 
+
+                      new OA\Property(
+                        property: "attachments[1][file]",
+                        type: "string",
+                        format: "binary",
+                        description: "attachment 2 for document"
+                    ), 
+
+                      new OA\Property(
                         property: "translations[0][lang]",
                         type: "string",
                         example: "en"
@@ -694,9 +761,8 @@ return $this->success($document->load('translations','categories','functions'), 
         new OA\Response(response: 200, description: "Updated")
     ]
 )]
- public function update($id, Request $request)
- {
-    $this->checkOwnerAdmin();
+public function update($id, Request $request)
+{
 
     $doc = Document::find($id);
     if (!$doc) return $this->error("Not found", 404);
@@ -706,11 +772,16 @@ return $this->success($document->load('translations','categories','functions'), 
 
         'only_view'             => 'nullable|in:0,1,true,false,TRUE,FALSE,True,False',
         'confidential'             => 'nullable|in:0,1,true,false,TRUE,FALSE,True,False',
+        'file' => 'nullable|file',
 
         'categories'          => 'nullable|array',
         'categories.*.id'   => 'required|integer',
         'functions'          => 'nullable|array',
         'functions.*.id'   => 'required|integer',
+
+
+'attachments'          => 'nullable|array',
+'attachments.*.file' => 'nullable|file',
 
         'translations'              => 'nullable|array',
         'translations.*.lang'       => 'required_with:translations|string|in:en,ru,uk',
@@ -724,11 +795,15 @@ return $this->success($document->load('translations','categories','functions'), 
 
         Storage::delete($doc->file_path);
 
-        $path = $request->file('file')->store('documents');
+        $file = $request->file('file');
+
+        $name = $file->getClientOriginalName();
+
+        $path = $file->storeAs('documents', $name, 'public');
+
         $ext  = strtolower($request->file('file')->getClientOriginalExtension());
 
         $doc->file_path = $path;
-        $doc->file_type = $ext;
         $doc->save();
     }
 
@@ -748,6 +823,23 @@ return $this->success($document->load('translations','categories','functions'), 
     $doc->categories()->sync($categories ?? $doc->categories->pluck('id')->toArray());
     $doc->functions()->sync($functions ?? $doc->functions->pluck('id')->toArray());
 
+
+    foreach ($request->attachments as $t) {
+
+        if (!empty($t['file'])) {
+
+         $file = $t['file'];
+
+         $name = $file->getClientOriginalName();
+
+         $path = $file->storeAs('attacments', $name, 'public');
+
+         DocumentAttachment::create([
+            'document_id' => $doc->id,'file' => $path]);
+     }
+ }
+
+
     foreach ($request->translations as $t) {
 
     // 1. Текст по умолчанию из description
@@ -759,7 +851,11 @@ return $this->success($document->load('translations','categories','functions'), 
     // 2. Если передан файл — OCR
         if (!empty($t['file'])) {
 
-            $path = $t['file']->store('ocr', 'public');
+            $file = $t['file'];
+
+            $name = $file->getClientOriginalName();
+
+            $path = $file->storeAs('ocr', $name, 'public');
             $fullPath = storage_path('app/public/' . $path);
 
             if (!file_exists($fullPath)) {
@@ -831,13 +927,12 @@ return $this->success($document->load('translations','categories','functions'), 
         [
             'title'     => $t['title'],
             'content'   => $text,
-            'file_path' => $path,
-            'file_type' => $ext,
+            'file' => $path
         ]
     );
 }
 
-return $this->success($doc->load('translations','categories','functions'), "Updated");
+return $this->success($doc->load('translations','attachments','categories','functions'), "Updated");
 }
 
 
@@ -859,7 +954,6 @@ return $this->success($doc->load('translations','categories','functions'), "Upda
 )]
     public function destroy($id)
     {
-        $this->checkOwnerAdmin();
 
         $doc = Document::find($id);
         if (!$doc) return $this->error("Not found", 404);
@@ -875,6 +969,35 @@ return $this->success($doc->load('translations','categories','functions'), "Upda
         ]);
 
         $doc->translations()->delete();
+        $doc->delete();
+
+        return $this->success(null, "Deleted");
+    }
+
+      /* ======================================================
+     | DELETE DOCUMENT
+     ====================================================== */
+    #[OA\Delete(
+     path: "/api/delete_attachment/{id}",
+     summary: "Delete attachment",
+     tags: ["Documents"],
+     parameters: [
+        new OA\Parameter(name: "id", in: "path", schema: new OA\Schema(type: "integer")),
+    ],
+    security: [["sanctum" => []]],
+    responses: [
+        new OA\Response(response: 200, description: "Deleted")
+    ]
+)]
+    public function delete_attachment($id)
+    {
+
+        $doc = DocumentAttachment::find($id);
+
+        if (!$doc) return $this->error("Not found", 404);
+
+        Storage::delete($doc->file);
+
         $doc->delete();
 
         return $this->success(null, "Deleted");
@@ -908,24 +1031,24 @@ return $this->success($doc->load('translations','categories','functions'), "Upda
 
         $items->transform(function ($doc) use ($lang) {
 
-         DocumentView::create([
+           DocumentView::create([
             'document_id' => $doc->id,
             'user_id' => auth()->id()
         ]);
 
-         $doc->translated = $doc->getTranslation($lang);
+           $doc->translated = $doc->getTranslation($lang);
 
-         $doc->views_last_30_days = $doc->views()
-         ->where('created_at','>=',now()->subDays(30))
-         ->count();
+           $doc->views_last_30_days = $doc->views()
+           ->where('created_at','>=',now()->subDays(30))
+           ->count();
 
-         $doc->ai_searches_last_30_days = isset($doc->translated['title']) ? ChatMessage::where('role','user')
-         ->where('created_at','>=',now()->subDays(30))
-         ->where('content','like','%'.$doc->translated['title'].'%')
-         ->count() : 0;
+           $doc->ai_searches_last_30_days = isset($doc->translated['title']) ? ChatMessage::where('role','user')
+           ->where('created_at','>=',now()->subDays(30))
+           ->where('content','like','%'.$doc->translated['title'].'%')
+           ->count() : 0;
 
-         return $doc;
-     });
+           return $doc;
+       });
 
         // ✅ EXPORT XLSX
 
@@ -962,24 +1085,24 @@ return $this->success($doc->load('translations','categories','functions'), "Upda
 
         $items->transform(function ($doc) use ($lang) {
 
-         DocumentView::create([
+           DocumentView::create([
             'document_id' => $doc->id,
             'user_id' => auth()->id()
         ]);
 
-         $doc->translated = $doc->getTranslation($lang);
+           $doc->translated = $doc->getTranslation($lang);
 
-         $doc->views_last_30_days = $doc->views()
-         ->where('created_at','>=',now()->subDays(30))
-         ->count();
+           $doc->views_last_30_days = $doc->views()
+           ->where('created_at','>=',now()->subDays(30))
+           ->count();
 
-         $doc->ai_searches_last_30_days = isset($doc->translated['title']) ? ChatMessage::where('role','user')
-         ->where('created_at','>=',now()->subDays(30))
-         ->where('content','like','%'.$doc->translated['title'].'%')
-         ->count() : 0;
+           $doc->ai_searches_last_30_days = isset($doc->translated['title']) ? ChatMessage::where('role','user')
+           ->where('created_at','>=',now()->subDays(30))
+           ->where('content','like','%'.$doc->translated['title'].'%')
+           ->count() : 0;
 
-         return $doc;
-     });
+           return $doc;
+       });
         $fileName = 'documents_' . now()->format('Ymd_His') . '.pdf';
 
         $pdf = Pdf::loadView('pdf.documents', [

@@ -45,12 +45,24 @@ class DashboardController extends Controller
     {
         $user = auth()->user();
 
+        // Разрешаем только: super admin, admin, owner
+        if (!in_array((int)$user->role_id, [1, 2, 7], true)) {
+            return $this->error('Forbidden', 403);
+        // или abort(403);
+        }
+
         $from = now()->subDays(30);
 
         $data = [
+            'active_plans' => Subscription::whereIn('status',['active','trialing'])->count(),
+            'clients_total' =>  User::where('role_id', 1)->count(),
+            'deleted_users' =>  User::onlyTrashed()->count(),
+            'active_users' =>  User::count(),
             'csat_last_30_days' => $this->csatOverall(),
+            'csat_last' => $this->csatOverallAll(),
             'deleted_users_last_30_days' =>  $this->trashedUsersLast30Days(),
             'total_revenue_last_30_days'  => $this->aiEconomics(),
+            'total_revenue'  => $this->aiEconomicsAll(),
 
         // ✅ total documents
             'documents_total' => Document::count(),
@@ -112,23 +124,23 @@ class DashboardController extends Controller
       {
         $stats = DB::select("
           SELECT d.id as doc_id, COUNT(*) as total
-FROM (
-    SELECT JSON_EXTRACT(meta, '$.picked_ids[0]') as doc_id
-    FROM chat_messages
-    WHERE role = 'assistant'
+          FROM (
+            SELECT JSON_EXTRACT(meta, '$.picked_ids[0]') as doc_id
+            FROM chat_messages
+            WHERE role = 'assistant'
 
-    UNION ALL
+            UNION ALL
 
-    SELECT JSON_EXTRACT(meta, '$.picked_ids[1]') as doc_id
-    FROM chat_messages
-    WHERE role = 'assistant'
-) t
-JOIN documents d ON d.id = t.doc_id
-WHERE t.doc_id IS NOT NULL
-GROUP BY d.id
-ORDER BY total DESC
-LIMIT 3;
-            ");
+            SELECT JSON_EXTRACT(meta, '$.picked_ids[1]') as doc_id
+            FROM chat_messages
+            WHERE role = 'assistant'
+        ) t
+          JOIN documents d ON d.id = t.doc_id
+          WHERE t.doc_id IS NOT NULL
+          GROUP BY d.id
+          ORDER BY total DESC
+          LIMIT 3;
+          ");
 
         $stats = collect($stats);
 
@@ -200,6 +212,26 @@ LIMIT 3;
         return round(($positiveSessions / $totalSessions) * 100, 1);
     }
 
+    private function csatOverallAll(): float
+    {
+
+    // 1️⃣ Всего сессий за 30 дней
+        $totalSessions = \App\Models\ChatSession::count();
+
+        if ($totalSessions === 0) {
+            return 0;
+        }
+
+    // 2️⃣ Сессии с положительным feedback
+        $positiveSessions = \App\Models\ChatSession::whereHas('messages.feedback', function ($q) {
+            $q->where('is_useful', true);
+        })
+        ->distinct()
+        ->count();
+
+        return round(($positiveSessions / $totalSessions) * 100, 1);
+    }
+
     private function mostViewedDocument()
     {
         $document = Document::with(['categories','functions'])
@@ -251,6 +283,58 @@ LIMIT 3;
         $answersQuery = ChatMessage::query()
         ->where('role', 'assistant')
         ->where('created_at', '>=', $daysAgo);
+
+        if ($user) {
+            $answersQuery->whereHas('session', fn ($q) => $q->where('user_id', $user->id));
+            $subscription = $this->subscriptionCard($user);
+        }
+
+        $aiAnswers = (int) $answersQuery->count();
+
+        $aiCost = round($aiAnswers * (float) config('ai.cost_per_answer', 0.002), 2);
+
+        $margin = $totalRevenue > 0
+        ? round((($totalRevenue - $aiCost) / $totalRevenue) * 100, 1)
+        : 0;
+
+        if ($user) {
+            return [
+                'current_plan' => [
+                    'name'   => $subscription['name'] ?? 'None',
+                    'status' => $subscription['status'] ?? '',
+                    'price'  => $subscription['price'] ?? 0,
+                    'period' => $subscription['period'] ?? 0,
+                ],
+                'total_revenue' => round($totalRevenue, 2),
+                'total_ai_cost' => $aiCost,
+                'net_margin'    => $margin,
+            ];
+        }
+
+        return [
+            'total_revenue' => round($totalRevenue, 2),
+            'total_ai_cost' => $aiCost,
+            'net_margin'    => $margin,
+        ];
+    }
+
+     private function aiEconomicsAll($user = null): array
+    {
+
+    // Revenue query
+        $revenueQuery = Subscription::query()
+        ->whereIn('subscriptions.status', ['active', 'canceled', 'trialing'])
+        ->join('plan_prices', 'subscriptions.plan_price_id', '=', 'plan_prices.id');
+
+        if ($user) {
+            $revenueQuery->where('subscriptions.user_id', $user->id);
+        }
+
+        $totalRevenue = (float) $revenueQuery->sum('plan_prices.price');
+
+    // AI answers query
+        $answersQuery = ChatMessage::query()
+        ->where('role', 'assistant');
 
         if ($user) {
             $answersQuery->whereHas('session', fn ($q) => $q->where('user_id', $user->id));
