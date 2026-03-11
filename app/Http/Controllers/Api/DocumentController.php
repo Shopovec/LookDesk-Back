@@ -382,8 +382,8 @@ public function store(Request $request)
         'translations.*.description' => 'nullable|string',
     ]);
 
-    $request->only_view = $request->only_view == 'true' ? 1 : 0;
-    $request->confidential = $request->confidential == 'true' ? 1 : 0;
+    $request->only_view = $request->only_view == 'true' || true || 1 ? 1 : 0;
+    $request->confidential = $request->confidential == 'true' || true || 1 ? 1 : 0;
 
 
     $categories = collect($request->categories)->pluck('id')->toArray();
@@ -415,7 +415,7 @@ public function store(Request $request)
     $document->categories()->sync($categories ?? []);
     $document->functions()->sync($functions ?? []);
 
-    foreach ($request->attachments as $t) {
+    foreach ($request->attachments ?? [] as $t) {
 
 
         if (!empty($t['file'])) {
@@ -573,7 +573,7 @@ return $this->success($document->load('translations','attachments','categories',
     {
         $lang = $request->get('lang', 'en');
 
-        $doc = Document::with(['translations', 'categories', 'functions'])->find($id);
+        $doc = Document::with(['translations', 'categories','attachments', 'functions'])->find($id);
 
         if (!$doc) return $this->error("Not found", 404);
 
@@ -632,7 +632,7 @@ return $this->success($document->load('translations','attachments','categories',
     /* ======================================================
      | SHOW DOCUMENT
      ====================================================== */
- #[OA\Put(
+ #[OA\Post(
      path: "/api/documents/{id}",
      summary: "Update document and translations",
      tags: ["Documents"],
@@ -768,24 +768,22 @@ public function update($id, Request $request)
     if (!$doc) return $this->error("Not found", 404);
 
     $request->validate([
-        'is_public'       => 'nullable|in:0,1,true,false,TRUE,FALSE,True,False',
-
+         'is_public'             => 'nullable|in:0,1,true,false,TRUE,FALSE,True,False',
         'only_view'             => 'nullable|in:0,1,true,false,TRUE,FALSE,True,False',
         'confidential'             => 'nullable|in:0,1,true,false,TRUE,FALSE,True,False',
+
         'file' => 'nullable|file',
 
-        'categories'          => 'nullable|array',
+
+        'categories'          => 'required|array',
         'categories.*.id'   => 'required|integer',
-        'functions'          => 'nullable|array',
+        'functions'          => 'required|array',
         'functions.*.id'   => 'required|integer',
-
-
-'attachments'          => 'nullable|array',
-'attachments.*.file' => 'nullable|file',
-
-        'translations'              => 'nullable|array',
-        'translations.*.lang'       => 'required_with:translations|string|in:en,ru,uk',
-        'translations.*.title'      => 'required_with:translations|string|max:255',
+        'attachments'          => 'nullable|array',
+        'attachments.*.file' => 'nullable|file',
+        'translations'          => 'required|array',
+        'translations.*.lang'   => 'required|string|in:en,ru,uk',
+        'translations.*.title'  => 'required|string|max:255',
         'translations.*.file' => 'nullable|file',
         'translations.*.description' => 'nullable|string',
     ]);
@@ -807,8 +805,8 @@ public function update($id, Request $request)
         $doc->save();
     }
 
-    $request->only_view = $request->only_view == 'true' ? 1 : 0;
-    $request->confidential = $request->confidential == 'true' ? 1 : 0;
+    $request->only_view = $request->only_view == 'true' || true || 1 ? 1 : 0;
+    $request->confidential = $request->confidential == 'true'  || true || 1 ? 1 : 0;
 
     // ----------------------- BASIC FIELDS -----------------------
     $doc->update([
@@ -824,7 +822,8 @@ public function update($id, Request $request)
     $doc->functions()->sync($functions ?? $doc->functions->pluck('id')->toArray());
 
 
-    foreach ($request->attachments as $t) {
+        foreach ($request->attachments ?? [] as $t) {
+
 
         if (!empty($t['file'])) {
 
@@ -835,7 +834,8 @@ public function update($id, Request $request)
          $path = $file->storeAs('attacments', $name, 'public');
 
          DocumentAttachment::create([
-            'document_id' => $doc->id,'file' => $path]);
+            'document_id' => $doc->id,'file' =>  $path ]);
+
      }
  }
 
@@ -918,6 +918,8 @@ public function update($id, Request $request)
         }
     }
 
+
+
     // 5. Сохранение
     DocumentTranslation::updateOrCreate(
         [
@@ -930,6 +932,8 @@ public function update($id, Request $request)
             'file' => $path
         ]
     );
+
+
 }
 
 return $this->success($doc->load('translations','attachments','categories','functions'), "Updated");
@@ -965,7 +969,7 @@ return $this->success($doc->load('translations','attachments','categories','func
             'action'  => 'deleted',
             'model' => 'document',
             'model_id' => $doc->id,
-            'deleted_title' => $doc->getTranslation('en')['title']
+            'deleted_title' => $doc->getTranslation('en')['title'] 
         ]);
 
         $doc->translations()->delete();

@@ -16,7 +16,7 @@ class CreateDocumentTranslationsTable extends Migration
             $table->string('lang', 10); // en, ua, pl, etc.
 
             $table->string('title');
-            $table->text('content');
+            $table->text('content')->nullable();
             $table->text('summary')->nullable();
             $table->text('file')->nullable();
 

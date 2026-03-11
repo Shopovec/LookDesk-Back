@@ -74,7 +74,7 @@ class SupportChatController extends Controller
     		'content' => $request->message,
     	]);
 
-        foreach ($request->attachments as $t) {
+        foreach ($request->input('attachments', []) as $t) {
 
 
         if (!empty($t['file'])) {
@@ -285,7 +285,7 @@ class SupportChatController extends Controller
     	]);
 
 
-        foreach ($request->attachments as $t) {
+        foreach ($request->input('attachments', []) as $t) {
 
 
         if (!empty($t['file'])) {
@@ -381,7 +381,7 @@ class SupportChatController extends Controller
         ]);
 
 
-        foreach ($request->attachments as $t) {
+        foreach ($request->input('attachments', []) as $t) {
 
 
         if (!empty($t['file'])) {

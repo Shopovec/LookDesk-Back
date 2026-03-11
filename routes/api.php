@@ -115,12 +115,13 @@ Route::middleware(['auth:sanctum', 'update_last_seen'])->group(function () {
     
     // Documents
     Route::apiResource('documents', DocumentController::class);
+    Route::post('documents/{id}', [DocumentController::class, 'update']);
 
     Route::put('documents/{id}/favorite', [DocumentController::class, 'favorite']);
     // Document Translations
     Route::get('documents/{id}/translations', [DocumentTranslationController::class, 'index']);
     Route::post('documents/{id}/translations', [DocumentTranslationController::class, 'store']);
-    Route::put('translations/{id}', [DocumentTranslationController::class, 'update']);
+    Route::Post('translations/{id}', [DocumentTranslationController::class, 'update']);
     Route::delete('translations/{id}', [DocumentTranslationController::class, 'destroy']);
     Route::delete('delete_attachment/{id}', [DocumentController::class, 'delete_attachment']);
 

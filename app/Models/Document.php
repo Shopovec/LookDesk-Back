@@ -90,7 +90,11 @@ class Document extends Model
         ->firstWhere('lang', $lang)
         ?? $this->translations->first();
 
-        if (!$tr) return '';
+        if (!$tr) return  [
+            'lang' => '',
+            'title' => '',
+            'description' => '',
+        ];;;
 
         $j = [
             'lang' => $tr->lang,
@@ -106,7 +110,11 @@ class Document extends Model
         ->firstWhere('lang', $lang)
         ?? $this->translations->first();
 
-        if (!$tr) return '';
+        if (!$tr) return [
+            'lang' => '',
+            'title' => '',
+            'description' => '',
+        ];;
 
         return [
             'lang' => $tr->lang,

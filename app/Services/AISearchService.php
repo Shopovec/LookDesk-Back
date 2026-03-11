@@ -18,7 +18,9 @@ class AISearchService
      */
     public function answer(ChatSession $session, ?string $preferredLang = null): array
     {
-        $userQuery = (string) ($session->search_query->query ?? '');
+        $userQuery = collect($session->messages)
+    ->where('role','user')
+    ->last()['content'] ?? '';
 
         // 1) Каталог: все переводы (или можно ограничить языком/количеством)
         $catalogLimit = (int) config('ai.catalog_limit', 400);
@@ -43,12 +45,20 @@ Cite sources as (Doc ID: X, lang: Y).
 Keep answers short and structured.
 SYS;
 
-        // История чата (если нужна)
-        $history = $session->messages()
-            ->orderBy('id')
-            ->get(['role', 'content'])
-            ->map(fn ($m) => ['role' => $m->role, 'content' => $m->content])
-            ->toArray();
+       $messagesCollection = $session->messages()
+    ->orderByDesc('id')
+    ->limit(10)
+    ->get(['role','content'])
+    ->reverse()
+    ->values();
+
+    $history = $messagesCollection
+    ->slice(0, -1)
+    ->map(fn ($m) => [
+        'role' => $m->role,
+        'content' => $m->content
+    ])
+    ->toArray();
 
         $messages = array_merge(
             [['role' => 'system', 'content' => $system . "\n\nDOCUMENTS:\n" . ($context ?: 'No docs found')]],
