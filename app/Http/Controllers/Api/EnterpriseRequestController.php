@@ -49,7 +49,7 @@ class EnterpriseRequestController extends Controller
         $req = EnterpriseRequest::create($data);
 
         // notify admins
-        $adminEmails = User::whereIn('role_id', [1, 2])->pluck('email')->toArray();
+        $adminEmails = User::whereIn('role_id', [7])->pluck('email')->toArray();
 
         if (!empty($adminEmails)) {
             Mail::raw(
@@ -94,7 +94,7 @@ class EnterpriseRequestController extends Controller
     {
         $user = auth()->user();
 
-        if (!$user || !in_array($user->role_id, [1, 2])) {
+        if (!$user || !in_array($user->role_id, [1, 2, 7])) {
             abort(403, 'Forbidden');
         }
 

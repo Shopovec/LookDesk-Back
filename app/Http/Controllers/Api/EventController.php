@@ -30,6 +30,10 @@ class EventController extends Controller
 )]
     public function index(Request $request)
     {
+        $user = auth()->user();
+        if (!$user || $user->hasRole('user') || $user->hasRole('editor') || $user->hasRole('accountant')) {
+            abort(403, "Forbidden");
+        }
         $per_page = $request->get('per_page', 20);
         $query = Event::query()->orderBy('created_at', 'DESC')->where('user_id', auth()->user()->id)->paginate($per_page);
 
@@ -89,6 +93,10 @@ class EventController extends Controller
     )]
     public function toggle(Request $request)
     {
+        $user = auth()->user();
+        if (!$user || $user->hasRole('user') || $user->hasRole('editor') || $user->hasRole('accountant')) {
+            abort(403, "Forbidden");
+        }
         $user = $request->user(); // sanctum
 
         // Если поле пришло — установить явно, если нет — просто переключить
@@ -148,6 +156,10 @@ class EventController extends Controller
     )]
     public function clear(Request $request)
     {
+        $user = auth()->user();
+        if (!$user || $user->hasRole('user') || $user->hasRole('editor') || $user->hasRole('accountant')) {
+            abort(403, "Forbidden");
+        }
         $user = $request->user();
 
         Event::query()

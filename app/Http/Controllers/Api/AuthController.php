@@ -9,6 +9,9 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
 use OpenApi\Attributes as OA;
 use Illuminate\Support\Facades\Mail;
+use Illuminate\Support\Facades\Validator;
+use Illuminate\Validation\Rules\Password;
+
 
 
 class AuthController extends Controller
@@ -27,7 +30,10 @@ class AuthController extends Controller
             'is_verified' => false,
         ]);
 
-        Mail::raw("Your verification code: {$code}", function ($m) use ($user) {
+        Mail::send('emails.verify-code', [
+            'user' => $user,
+            'code' => $code,
+        ], function ($m) use ($user) {
             $m->to($user->email)->subject('Verify your account');
         });
     }
@@ -58,13 +64,14 @@ class AuthController extends Controller
 )]
     public function login(Request $request)
     {
-
         $request->validate([
             'email' => 'required|email',
             'password' => 'required'
         ]);
 
-        $user = User::where('email', $request->email)->first();
+        $user = User::where('email', $request->email)
+        ->whereNull('deleted_at')
+        ->first();
 
         if (!$user || !Hash::check($request->password, $user->password)) {
             return $this->error('Invalid credentials', 401);
@@ -74,26 +81,25 @@ class AuthController extends Controller
             return $this->error('Account not verified', 403);
         }
 
-    // admin shortcut
-        if ($user->role_id == 2) {
+        if ((int)$user->role_id === 2) {
             $this->sendVerification($user);
 
             return $this->success(null, 'Verification code sent to email', 201);
-        } else {
-            $token = $user->createToken('api')->plainTextToken;
-
-            return $this->success([
-                'token' => $token,
-                'user' => $user->load([
-                    'role',
-                    'subscription.plan',
-                    'subscription.plan.features',
-                    'subscription.plan.prices',
-                    'subscription.planPrice',
-                    'payments'
-                ])
-            ]);
         }
+
+        $token = $user->createToken('api')->plainTextToken;
+
+        return $this->success([
+            'token' => $token,
+            'user' => $user->load([
+                'role',
+                'subscription.plan',
+                'subscription.plan.features',
+                'subscription.plan.prices',
+                'subscription.planPrice',
+                'payments'
+            ])
+        ]);
     }
 
     /* ---------------------------------------------------------
@@ -121,23 +127,46 @@ class AuthController extends Controller
 )]
     public function register(Request $request)
     {
-        $request->validate([
-            'name'     => 'required|string',
-            'email'    => 'required|email|unique:users',
-            'password' => 'required|string|min:6'
-        ]);
+     $validator = Validator::make($request->all(), [
+        'name' => ['required', 'string', 'min:2', 'max:255'],
+        'email' => ['required', 'string', 'email:rfc,dns', 'max:255', 'email' => [
+            'required',
+            'string',
+            'email:rfc,dns',
+            'max:255',
+            Rule::unique('users', 'email')->withoutTrashed(),
+        ],],
+        'password' => ['required', 'string', 'confirmed', Password::min(6)],
+    ], [
+        'name.required' => 'I am required.',
+        'email.required' => 'The email address is required.',
+        'email.email' => 'Enter a valid email address.',
+        'email.unique' => 'There is also a user at this email address.',
+        'password.required' => 'The password is binding.',
+        'password.confirmed' => 'Post confirmation not confirmed.',
+    ]);
 
-        $user = User::create([
-            'name'     => $request->name,
-            'email'    => $request->email,
-            'password' => Hash::make($request->password),
-            'role_id'  => 4 // default role: user
-        ]);
-
-        $this->sendVerification($user);
-
-        return $this->success(null, 'Verification code sent to email', 201);
+     if ($validator->fails()) {
+        return response()->json([
+            'success' => false,
+            'message' => 'Validation failed',
+            'errors' => $validator->errors()
+        ], 422);
     }
+
+    $data = $validator->validated();
+
+    $user = User::create([
+        'name' => trim($data['name']),
+        'email' => mb_strtolower(trim($data['email'])),
+        'password' => Hash::make($data['password']),
+        'role_id' => 4
+    ]);
+
+    $this->sendVerification($user);
+
+    return $this->success(null, 'Verification code sent to email', 201);
+}
 
     /* ---------------------------------------------------------
      | GET CURRENT USER
@@ -201,7 +230,7 @@ class AuthController extends Controller
                 'subscription.plan.features',
                 'subscription.plan.prices',
                 'subscription.planPrice',
-                 'payments'
+                'payments'
             ])
         ]);
     } 

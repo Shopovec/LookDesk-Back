@@ -44,11 +44,8 @@ class DashboardController extends Controller
     public function index(Request $request)
     {
         $user = auth()->user();
-
-        // Разрешаем только: super admin, admin, owner
-        if (!in_array((int)$user->role_id, [1, 2, 7], true)) {
-            return $this->error('Forbidden', 403);
-        // или abort(403);
+        if (!$user || $user->hasRole('user') || $user->hasRole('editor') || $user->hasRole('accountant')) {
+            abort(403, "Forbidden");
         }
 
         $from = now()->subDays(30);

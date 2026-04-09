@@ -91,7 +91,10 @@ class CategoryController extends Controller
     )]
     public function store(Request $request)
     {
-        $this->checkOwnerAdmin();
+        $user = auth()->user();
+        if (!$user || $user->hasRole('user') || $user->hasRole('editor') || $user->hasRole('accountant')) {
+            abort(403, "Forbidden");
+        }
 
         $request->validate([
             'translations' => 'required|array',
@@ -189,10 +192,16 @@ class CategoryController extends Controller
     )]
     public function update($id, Request $request)
     {
-        $this->checkOwnerAdmin();
-
         $category = Category::find($id);
+        $user = auth()->user();
+        if (!$user || $user->hasRole('user') || $user->hasRole('editor') || $user->hasRole('accountant')) {
+            abort(403, "Forbidden");
+        }
+
         if (!$category) return $this->error("Not found", 404);
+        if ($category->is_system) {
+             abort(403, "Forbidden");
+        }
 
         if ($request->translations) {
             foreach ($request->translations as $t) {
@@ -229,7 +238,14 @@ class CategoryController extends Controller
         $this->checkOwnerAdmin();
 
         $category = Category::find($id);
+        if (!$user || $user->hasRole('user') || $user->hasRole('accountant') || $user->hasRole('editor')) {
+            abort(403, "Forbidden");
+        }
+
         if (!$category) return $this->error("Not found", 404);
+        if ($category->is_system) {
+             abort(403, "Forbidden");
+        }
 
         Event::create([
             'user_id' => auth()->user()->id,

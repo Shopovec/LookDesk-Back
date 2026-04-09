@@ -114,6 +114,10 @@ class FunctionController extends Controller
 )]
     public function store(Request $request)
     {
+        $user = auth()->user();
+        if (!$user || $user->hasRole('user') || $user->hasRole('editor') || $user->hasRole('accountant')) {
+            abort(403, "Forbidden");
+        }
         $request->validate([
             'translations' => 'required|array',
             'translations.*.lang' => 'required|string',
@@ -231,6 +235,10 @@ class FunctionController extends Controller
 )]
     public function update($id, Request $request)
     {
+        $user = auth()->user();
+        if (!$user || $user->hasRole('user') || $user->hasRole('editor') || $user->hasRole('accountant')) {
+            abort(403, "Forbidden");
+        }
         $function = FunctionZ::find($id);
         if (!$function) return $this->error("Not found", 404);
 
@@ -274,6 +282,10 @@ class FunctionController extends Controller
     public function destroy($id)
     {
 
+        $user = auth()->user();
+        if (!$user || $user->hasRole('user') || $user->hasRole('editor') || $user->hasRole('accountant')) {
+            abort(403, "Forbidden");
+        }
         $function = FunctionZ::find($id);
         if (!$function) return $this->error("Not found", 404);
 

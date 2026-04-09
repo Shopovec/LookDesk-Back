@@ -8,14 +8,16 @@ use App\Models\DocumentTranslation;
 use App\Models\DocumentAttachment;
 use App\Models\Event;
 use App\Traits\ApiResponse;
-use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Storage;
-use Illuminate\Support\Str;
 use OpenApi\Attributes as OA;
 use App\Models\DocumentEmbedding;
 use App\Services\OllamaClient;
 use App\Models\DocumentView;
 use App\Models\ChatMessage;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Str;
 use PhpOffice\PhpWord\IOFactory;
 use Maatwebsite\Excel\Facades\Excel;
 use Barryvdh\DomPDF\Facade\Pdf;
@@ -87,64 +89,158 @@ class DocumentController extends Controller
     public function index(Request $request)
     {
         $lang = $request->get('lang', 'en');
+        $user = auth()->user();
+        $isPrivileged = !$user->hasRole('user') && !$user->hasRole('editor');
 
-        $q = Document::with(['translations','attachments','categories','functions']);
-
-        if ($request->category_id) {
-            $q->whereHas('categories', fn($x) =>
-                $x->where('categories.id', $request->category_id)
-            );
-        }
-
-        if ($request->function_id) {
-            $q->whereHas('functions', fn($x) =>
-                $x->where('functions.id', $request->function_id)
-            );
-        }
-
-        if ($request->search) {
-            $q->whereHas('translations', fn($x)=>
-                $x->where('title','like',"%{$request->search}%")
-                ->orWhere('content','like',"%{$request->search}%")
-            );
-        }
-
-        $items = $q->orderBy('id', 'desc')->get();
-
-        $items->transform(function ($doc) use ($lang) {
-
-           DocumentView::create([
-            'document_id' => $doc->id,
-            'user_id' => auth()->id()
+        $query = Document::query()
+        ->with([
+            'translations' => function ($q) use ($lang) {
+                $q->where('lang', $lang)
+                ->select('id', 'document_id', 'lang', 'title', 'content', 'file');
+            },
+            'attachments',
+            'categories' => function ($q) {
+                $q->select('categories.id');
+            },
+            'categories.translations' => function ($q) use ($lang) {
+                $q->where('lang', $lang)
+                ->select('id', 'category_id', 'lang', 'title');
+            },
+            'functions',
         ]);
 
-           $doc->translated = $doc->getTranslation($lang);
+        if ($request->filled('category_id')) {
+            $categoryId = (int) $request->category_id;
 
-           $doc->views_last_30_days = $doc->views()
-           ->where('created_at','>=',now()->subDays(30))
-           ->count();
+            $query->whereHas('categories', function ($q) use ($categoryId) {
+                $q->where('categories.id', $categoryId);
+            });
+        }
 
-           $doc->ai_searches_last_30_days = isset($doc->translated['title']) ? ChatMessage::where('role','user')
-           ->where('created_at','>=',now()->subDays(30))
-           ->where('content','like','%'.$doc->translated['title'].'%')
-           ->count() : 0;
+        if ($request->filled('function_id')) {
+            $functionId = (int) $request->function_id;
 
-           return $doc;
-       });
+            $query->whereHas('functions', function ($q) use ($functionId) {
+                $q->where('functions.id', $functionId);
+            });
+        }
 
-        // ✅ EXPORT XLSX
-        if ($request->isExportXSL) {
+        if ($request->filled('search')) {
+            $search = trim($request->search);
+
+            $query->whereHas('translations', function ($q) use ($search) {
+                $q->where(function ($subQ) use ($search) {
+                    $subQ->where('title', 'like', '%' . $search . '%')
+                    ->orWhere('content', 'like', '%' . $search . '%');
+                });
+            });
+        }
+
+        if ($isPrivileged) {
+            $query->withCount([
+                'views as views_last_30_days' => function ($q) {
+                    $q->where('created_at', '>=', now()->subDays(30));
+                }
+            ]);
+        }
+
+        $items = $query->orderByDesc('id')->get();
+
+        $docIds = $items->pluck('id')->map(fn($id) => (int) $id)->values()->all();
+
+        $docIds = $items->pluck('id')->map(fn($id) => (int) $id)->values()->all();
+
+        $aiSearchCounts = [];
+
+        if ($isPrivileged && !empty($docIds)) {
+            $selectParts = [];
+            $bindings = [];
+
+            foreach ($docIds as $docId) {
+                $selectParts[] = "
+                SUM(
+                CASE
+                WHEN JSON_CONTAINS(
+                JSON_EXTRACT(cm.meta, '$.picked_ids'),
+                ?
+                )
+                THEN 1 ELSE 0
+                END
+                ) AS doc_$docId
+                ";
+
+                $bindings[] = (string) $docId;
+            }
+
+            $sql = "
+            SELECT " . implode(",\n", $selectParts) . "
+            FROM chat_messages cm
+            WHERE cm.role = ?
+            AND cm.created_at >= ?
+            AND JSON_EXTRACT(cm.meta, '$.picked_ids') IS NOT NULL
+            ";
+
+            $bindings[] = 'assistant';
+            $bindings[] = now()->subDays(30);
+
+            $row = \DB::selectOne($sql, $bindings);
+
+            foreach ($docIds as $docId) {
+                $aiSearchCounts[$docId] = (int) ($row->{'doc_' . $docId} ?? 0);
+            }
+        }
+
+        $items->transform(function ($doc) use ($isPrivileged, $aiSearchCounts) {
+            $translation = $doc->translations->first();
+
+            $doc->translated = $translation ? [
+                'id'      => $translation->id,
+                'lang'    => $translation->lang,
+                'title'   => $translation->title,
+                'content' => $translation->content,
+                'file'    => $translation->file,
+            ] : null;
+
+            unset($doc->translations);
+
+            if ($doc->relationLoaded('categories')) {
+                $doc->categories->transform(function ($category) {
+                    $translation = $category->translations->first();
+
+                    $category->translated = $translation ? [
+                        'id'    => $translation->id,
+                        'lang'  => $translation->lang,
+                        'title' => $translation->title,
+                    ] : null;
+
+                    unset($category->translations);
+
+                    return $category;
+                });
+            }
+
+            if (!$isPrivileged) {
+                unset($doc->views_last_30_days);
+            }
+
+            $doc->ai_searches_last_30_days = $isPrivileged
+            ? ($aiSearchCounts[$doc->id] ?? 0)
+            : 0;
+
+            return $doc;
+        });
+
+        if ($request->boolean('isExportXSL')) {
             $fileName = 'documents_' . now()->format('Ymd_His') . '.xlsx';
             return Excel::download(new DocumentsExport($items), $fileName);
         }
 
-    // ✅ EXPORT PDF
-        if ($request->isExportPDF) {
+        if ($request->boolean('isExportPDF')) {
             $fileName = 'documents_' . now()->format('Ymd_His') . '.pdf';
 
             $pdf = Pdf::loadView('pdf.documents', [
                 'documents' => $items,
-                'user' => auth()->user(),
+                'user'      => $user,
             ])->setPaper('a4');
 
             return $pdf->download($fileName);
@@ -358,16 +454,95 @@ requestBody: new OA\RequestBody(
 responses: [
     new OA\Response(response: 201, description: "Created")
 ]
+
+
 )]
+
+protected function makeUniqueDocumentSlug(string $title): string
+{
+    $baseSlug = Str::slug($title) ?: Str::random(8);
+    $slug = $baseSlug;
+    $i = 1;
+
+    while (Document::where('slug', $slug)->exists()) {
+        $slug = $baseSlug . '-' . $i;
+        $i++;
+    }
+
+    return $slug;
+}
+
+protected function extractTextFromUploadedFile(string $fullPath, ?string $ext, string $lang): string
+{
+    if (!file_exists($fullPath)) {
+        Log::error('OCR file missing', ['path' => $fullPath]);
+        return '';
+    }
+
+    $ext = strtolower((string) $ext);
+
+    try {
+        if ($ext === 'pdf') {
+            $imagePath = $this->convertPdfToPng($fullPath);
+
+            if (!$imagePath) {
+                Log::error('PDF convert failed', ['file' => $fullPath]);
+                return '';
+            }
+
+            return $this->runTesseract($imagePath, $this->mapLangForTesseract($lang));
+        }
+
+        if (in_array($ext, ['jpg', 'jpeg', 'png', 'webp'])) {
+            return $this->runTesseract($fullPath, $this->mapLangForTesseract($lang));
+        }
+
+        if ($ext === 'docx') {
+            $phpWord = IOFactory::load($fullPath);
+            $text = '';
+
+            foreach ($phpWord->getSections() as $section) {
+                foreach ($section->getElements() as $element) {
+                    if (method_exists($element, 'getText')) {
+                        $text .= $element->getText() . "\n";
+                    }
+                }
+            }
+
+            return trim($text);
+        }
+
+        if ($ext === 'txt') {
+            return trim((string) file_get_contents($fullPath));
+        }
+
+        Log::warning('Unsupported file type', ['ext' => $ext, 'file' => $fullPath]);
+        return '';
+    } catch (\Throwable $e) {
+        Log::error('Text extraction failed', [
+            'file' => $fullPath,
+            'ext' => $ext,
+            'lang' => $lang,
+            'error' => $e->getMessage(),
+        ]);
+
+        return '';
+    }
+}
 public function store(Request $request)
 {
-    $request->validate([
+    $user = auth()->user();
+
+    if (!$user || $user->hasRole('user') || $user->hasRole('accountant')) {
+        abort(403, 'Forbidden');
+    }
+
+    $validated = $request->validate([
         'is_public'             => 'nullable|in:0,1,true,false,TRUE,FALSE,True,False',
         'only_view'             => 'nullable|in:0,1,true,false,TRUE,FALSE,True,False',
         'confidential'             => 'nullable|in:0,1,true,false,TRUE,FALSE,True,False',
 
-        'file' => 'nullable|file',
-
+        'file'                   => 'nullable|file',
 
         'categories'          => 'required|array',
         'categories.*.id'   => 'required|integer',
@@ -382,172 +557,123 @@ public function store(Request $request)
         'translations.*.description' => 'nullable|string',
     ]);
 
-    $request->only_view = $request->only_view == 'true' || true || 1 ? 1 : 0;
-    $request->confidential = $request->confidential == 'true' || true || 1 ? 1 : 0;
+    $request->is_public = $request->is_public == 'true' ||  $request->is_public == 1 ? 1 : 0;
 
+    $request->only_view = $request->only_view == 'true' || $request->only_view == 1 ? 1 : 0;
 
-    $categories = collect($request->categories)->pluck('id')->toArray();
-    $functions  = collect($request->functions)->pluck('id')->toArray();
+    $request->confidential = $request->confidential == 'true'  || $request->confidential == 1 ? 1 : 0;
 
-    $document = Document::create([
-        'only_view'   =>  $request->only_view ?? false,
-        'confidential'   =>  $request->confidential ?? false,
-        'is_public'   => $request->is_public ?? false,
-        'created_by'     => auth()->id(),
-        'slug'        => Str::slug($request->translations[0]['title'] ?? Str::random(8)),
-    ]);
+    $categories = collect($validated['categories'])->pluck('id')->map(fn ($id) => (int) $id)->all();
+    $functions  = collect($validated['functions'])->pluck('id')->map(fn ($id) => (int) $id)->all();
 
-    if ($request->hasFile('file')) {
+    $document = DB::transaction(function () use ($validated, $categories, $functions, $user, $request) {
+        $baseTitle = $validated['translations'][0]['title'] ?? Str::random(8);
 
-        $file = $request->file('file');
-
-        $name = $file->getClientOriginalName();
-
-        $path = $file->storeAs('documents', $name, 'public');
-
-        $ext  = strtolower($request->file('file')->getClientOriginalExtension());
-
-        $document->file_path = $path;
-        $document->save();
-    }
-
-
-    $document->categories()->sync($categories ?? []);
-    $document->functions()->sync($functions ?? []);
-
-    foreach ($request->attachments ?? [] as $t) {
-
-
-        if (!empty($t['file'])) {
-
-         $file = $t['file'];
-
-         $name = $file->getClientOriginalName();
-
-         $path = $file->storeAs('attacments', $name, 'public');
-
-         DocumentAttachment::create([
-            'document_id' => $document->id,'file' =>  $path ]);
-
-     }
- }
-
-
- foreach ($request->translations as $t) {
-
-    // 1. Текст по умолчанию из description
-    $text = '';
-
-    $path = null;
-    $ext  = null;
-
-    // 2. Если передан файл — OCR
-    if (!empty($t['file'])) {
-
-     $file = $t['file'];
-
-     $name = $file->getClientOriginalName();
-
-     $path = $file->storeAs('ocr', $name, 'public');
-     $fullPath = storage_path('app/public/' . $path);
-
-
-     if (!file_exists($fullPath)) {
-        \Log::error('OCR file missing', ['path' => $fullPath]);
-            continue; // не валим весь запрос
-        }
-
-        $ext = strtolower($t['file']->getClientOriginalExtension());
-        $imagePath = $fullPath;
-
-        if ($ext === 'pdf') {
-
-            $imagePath = $this->convertPdfToPng($fullPath);
-
-            if (!$imagePath) {
-                \Log::error('PDF convert failed', ['file' => $fullPath]);
-                continue;
-            }
-
-            $ocrLang = $this->mapLangForTesseract($t['lang'] ?? 'en');
-            $text = $this->runTesseract($imagePath, $ocrLang);
-
-        }
-        elseif (in_array($ext, ['jpg','jpeg','png','webp'])) {
-
-            $ocrLang = $this->mapLangForTesseract($t['lang'] ?? 'en');
-            $text = $this->runTesseract($fullPath, $ocrLang);
-
-        }
-        elseif ($ext === 'docx') {
-
-            try {
-                $phpWord = IOFactory::load($fullPath);
-                $text = '';
-
-                foreach ($phpWord->getSections() as $section) {
-                    foreach ($section->getElements() as $element) {
-                        if (method_exists($element, 'getText')) {
-                            $text .= $element->getText() . "\n";
-                        }
-                    }
-                }
-
-            } catch (\Exception $e) {
-                \Log::error('DOCX read error', ['error' => $e->getMessage()]);
-                continue;
-            }
-
-        }
-        elseif ($ext === 'txt') {
-
-            $text = file_get_contents($fullPath);
-
-        }
-        else {
-
-            \Log::warning('Unsupported file type', ['ext' => $ext]);
-            continue;
-
-        }
-    }
-
-
-    $text2 = trim(($t['title'] ?? '') . "\n" . ($text));
-
-    $ollama = OllamaClient::make();
-
-    $vec = $ollama->embed($text);
-
-    DocumentEmbedding::updateOrCreate(
-        ['document_id' => $document->id, 'lang' => $t['lang']],
-        ['embedding' => $vec]
-    );
-
-    DocumentTranslation::create([
-        'document_id' => $document->id,
-        'lang'        => $t['lang'],
-        'title'       => $t['title'],
-        'file'        => $path,
-        'content'     => $text,
-        'summary' => $t['description'], 
-            'file_path'   => $path,        // лучше сохранить относительный (из store)
-            'file_type'   => $ext,
+        $document = Document::create([
+            'only_view'    => (bool)($validated['only_view'] ?? false),
+            'confidential' => (bool)($validated['confidential'] ?? false),
+            'is_public'    => (bool)($validated['is_public'] ?? false),
+            'created_by'   => $user->id,
         ]);
 
+        if ($request->hasFile('file')) {
+            $document->file_path = $request->file('file')->store('documents', 'public');
+            $document->save();
+        }
 
-}
+        $document->categories()->sync($categories);
+        $document->functions()->sync($functions);
 
+        foreach (($validated['attachments'] ?? []) as $index => $attachmentRow) {
+            if ($request->hasFile("attachments.$index.file")) {
+                $path = $request->file("attachments.$index.file")->store('attachments', 'public');
 
+                DocumentAttachment::create([
+                    'document_id' => $document->id,
+                    'file'        => $path,
+                ]);
+            }
+        }
 
-Event::create([
-    'user_id' => auth()->user()->id,
-    'action'  => 'created',
-    'model' => 'document',
-    'model_id' => $document->id,
-]);
+        foreach ($validated['translations'] as $index => $translationRow) {
+            $lang = $translationRow['lang'];
+            $title = $translationRow['title'];
+            $summary = $translationRow['description'] ?? null;
 
-return $this->success($document->load('translations','attachments','categories','functions'), "Created", 201);
+            $path = null;
+            $ext = null;
+            $text = '';
+
+            if ($request->hasFile("translations.$index.file")) {
+                $uploadedFile = $request->file("translations.$index.file");
+                $path = $uploadedFile->store('ocr', 'public');
+                $fullPath = storage_path('app/public/' . $path);
+                $ext = strtolower($uploadedFile->getClientOriginalExtension());
+
+                $text = $this->extractTextFromUploadedFile($fullPath, $ext, $lang);
+            }
+
+            $contentForEmbedding = trim(
+                collect([$title, $summary, $text])
+                ->filter(fn ($value) => filled($value))
+                ->implode("\n")
+            );
+
+            if ($contentForEmbedding !== '') {
+                try {
+                    $ollama = OllamaClient::make();
+                    $vec = $ollama->embed($contentForEmbedding);
+
+                    DocumentEmbedding::updateOrCreate(
+                        [
+                            'document_id' => $document->id,
+                            'lang'        => $lang,
+                        ],
+                        [
+                            'embedding'   => $vec,
+                        ]
+                    );
+                } catch (\Throwable $e) {
+                    Log::error('Embedding generation failed', [
+                        'document_id' => $document->id,
+                        'lang' => $lang,
+                        'error' => $e->getMessage(),
+                    ]);
+                }
+            }
+
+            DocumentTranslation::create([
+                'document_id' => $document->id,
+                'lang'        => $lang,
+                'title'       => $title,
+                'file'        => $path,
+                'content'     => $text,
+                'summary'     => $summary,
+                'file_path'   => $path,
+                'file_type'   => $ext,
+            ]);
+        }
+
+        Event::create([
+            'user_id'  => $user->id,
+            'action'   => 'created',
+            'model'    => 'document',
+            'model_id' => $document->id,
+        ]);
+
+        return $document;
+    });
+
+    return $this->success(
+        $document->load([
+            'translations',
+            'attachments',
+            'categories.translations',
+            'functions',
+        ]),
+        'Created',
+        201
+    );
 }
 
      /* ======================================================
@@ -763,180 +889,166 @@ return $this->success($document->load('translations','attachments','categories',
 )]
 public function update($id, Request $request)
 {
-
+    $user = auth()->user();
+    if (!$user || $user->hasRole('user') || $user->hasRole('accountant')) {
+        abort(403, "Forbidden");
+    }
     $doc = Document::find($id);
     if (!$doc) return $this->error("Not found", 404);
 
-    $request->validate([
-         'is_public'             => 'nullable|in:0,1,true,false,TRUE,FALSE,True,False',
-        'only_view'             => 'nullable|in:0,1,true,false,TRUE,FALSE,True,False',
-        'confidential'             => 'nullable|in:0,1,true,false,TRUE,FALSE,True,False',
+    $validated = $request->validate([
+     'is_public'             => 'nullable|in:0,1,true,false,TRUE,FALSE,True,False',
+     'only_view'             => 'nullable|in:0,1,true,false,TRUE,FALSE,True,False',
+     'confidential'             => 'nullable|in:0,1,true,false,TRUE,FALSE,True,False',
 
-        'file' => 'nullable|file',
-
-
-        'categories'          => 'required|array',
-        'categories.*.id'   => 'required|integer',
-        'functions'          => 'required|array',
-        'functions.*.id'   => 'required|integer',
-        'attachments'          => 'nullable|array',
-        'attachments.*.file' => 'nullable|file',
-        'translations'          => 'required|array',
-        'translations.*.lang'   => 'required|string|in:en,ru,uk',
-        'translations.*.title'  => 'required|string|max:255',
-        'translations.*.file' => 'nullable|file',
-        'translations.*.description' => 'nullable|string',
-    ]);
-
-    // ----------------------- UPDATE MAIN FILE -----------------------
-    if ($request->hasFile('file')) {
-
-        Storage::delete($doc->file_path);
-
-        $file = $request->file('file');
-
-        $name = $file->getClientOriginalName();
-
-        $path = $file->storeAs('documents', $name, 'public');
-
-        $ext  = strtolower($request->file('file')->getClientOriginalExtension());
-
-        $doc->file_path = $path;
-        $doc->save();
-    }
-
-    $request->only_view = $request->only_view == 'true' || true || 1 ? 1 : 0;
-    $request->confidential = $request->confidential == 'true'  || true || 1 ? 1 : 0;
-
-    // ----------------------- BASIC FIELDS -----------------------
-    $doc->update([
-        'is_public'   => $request->is_public ?? $doc->is_public,
-        'only_view'   => $request->only_view ?? $doc->only_view,
-        'confidential'   => $request->confidential ?? $doc->confidential
-    ]);
-
-    $categories = collect($request->categories)->pluck('id')->toArray();
-    $functions  = collect($request->functions)->pluck('id')->toArray();
-
-    $doc->categories()->sync($categories ?? $doc->categories->pluck('id')->toArray());
-    $doc->functions()->sync($functions ?? $doc->functions->pluck('id')->toArray());
+     'file' => 'nullable|file',
 
 
-        foreach ($request->attachments ?? [] as $t) {
+     'categories'          => 'required|array',
+     'categories.*.id'   => 'required|integer',
+     'functions'          => 'required|array',
+     'functions.*.id'   => 'required|integer',
+     'attachments'          => 'nullable|array',
+     'attachments.*.file' => 'nullable|file',
+     'translations'          => 'required|array',
+     'translations.*.lang'   => 'required|string|in:en,ru,uk',
+     'translations.*.title'  => 'required|string|max:255',
+     'translations.*.file' => 'nullable|file',
+     'translations.*.description' => 'nullable|string',
+ ]);
 
 
-        if (!empty($t['file'])) {
+    $request->is_public = $request->is_public == 'true' ||  $request->is_public == 1 ? 1 : 0;
 
-         $file = $t['file'];
+    $request->only_view = $request->only_view == 'true' || $request->only_view == 1 ? 1 : 0;
 
-         $name = $file->getClientOriginalName();
+    $request->confidential = $request->confidential == 'true'  || $request->confidential == 1 ? 1 : 0;
 
-         $path = $file->storeAs('attacments', $name, 'public');
+    $categories = collect($validated['categories'])->pluck('id')->map(fn ($id) => (int) $id)->all();
+    $functions  = collect($validated['functions'])->pluck('id')->map(fn ($id) => (int) $id)->all();
 
-         DocumentAttachment::create([
-            'document_id' => $doc->id,'file' =>  $path ]);
+    DB::transaction(function () use ($request, $validated, $doc, $categories, $functions, $user) {
+        $doc->update([
+            'is_public'    => (bool)($validated['is_public'] ?? $doc->is_public),
+            'only_view'    => (bool)($validated['only_view'] ?? $doc->only_view),
+            'confidential' => (bool)($validated['confidential'] ?? $doc->confidential),
+        ]);
 
-     }
- }
-
-
-    foreach ($request->translations as $t) {
-
-    // 1. Текст по умолчанию из description
-        $text = $t['description'] ?? null;
-
-        $path = null;
-        $ext  = null;
-
-    // 2. Если передан файл — OCR
-        if (!empty($t['file'])) {
-
-            $file = $t['file'];
-
-            $name = $file->getClientOriginalName();
-
-            $path = $file->storeAs('ocr', $name, 'public');
-            $fullPath = storage_path('app/public/' . $path);
-
-            if (!file_exists($fullPath)) {
-                \Log::error('OCR file missing', ['path' => $fullPath]);
-            continue; // не валим весь запрос
-        }
-
-        $ext = strtolower($t['file']->getClientOriginalExtension());
-        $imagePath = $fullPath;
-
-        if ($ext === 'pdf') {
-
-            $imagePath = $this->convertPdfToPng($fullPath);
-
-            if (!$imagePath) {
-                \Log::error('PDF convert failed', ['file' => $fullPath]);
-                continue;
+        if ($request->hasFile('file')) {
+            if ($doc->file_path && Storage::disk('public')->exists($doc->file_path)) {
+                Storage::disk('public')->delete($doc->file_path);
             }
 
-            $ocrLang = $this->mapLangForTesseract($t['lang'] ?? 'en');
-            $text = $this->runTesseract($imagePath, $ocrLang);
-
+            $doc->file_path = $request->file('file')->store('documents', 'public');
+            $doc->save();
         }
-        elseif (in_array($ext, ['jpg','jpeg','png','webp'])) {
 
-            $ocrLang = $this->mapLangForTesseract($t['lang'] ?? 'en');
-            $text = $this->runTesseract($fullPath, $ocrLang);
+        $doc->categories()->sync($categories);
+        $doc->functions()->sync($functions);
 
+        foreach (($validated['attachments'] ?? []) as $index => $attachmentRow) {
+            if ($request->hasFile("attachments.$index.file")) {
+                $path = $request->file("attachments.$index.file")->store('attachments', 'public');
+
+                DocumentAttachment::create([
+                    'document_id' => $doc->id,
+                    'file'        => $path,
+                ]);
+            }
         }
-        elseif ($ext === 'docx') {
 
-            try {
-                $phpWord = IOFactory::load($fullPath);
-                $text = '';
+        foreach ($validated['translations'] as $index => $translationRow) {
+            $lang = $translationRow['lang'];
+            $title = $translationRow['title'];
+            $summary = $translationRow['description'] ?? null;
 
-                foreach ($phpWord->getSections() as $section) {
-                    foreach ($section->getElements() as $element) {
-                        if (method_exists($element, 'getText')) {
-                            $text .= $element->getText() . "\n";
-                        }
+            $translation = DocumentTranslation::where('document_id', $doc->id)
+            ->where('lang', $lang)
+            ->first();
+
+            $text = $translation->content ?? '';
+            $path = $translation->file_path ?? $translation->file ?? null;
+            $ext = $translation->file_type ?? null;
+
+            if ($request->hasFile("translations.$index.file")) {
+                $uploadedFile = $request->file("translations.$index.file");
+
+                if ($translation) {
+                    $oldFile = $translation->file_path ?: $translation->file;
+                    if ($oldFile && Storage::disk('public')->exists($oldFile)) {
+                        Storage::disk('public')->delete($oldFile);
                     }
                 }
 
-            } catch (\Exception $e) {
-                \Log::error('DOCX read error', ['error' => $e->getMessage()]);
-                continue;
+                $path = $uploadedFile->store('ocr', 'public');
+                $fullPath = storage_path('app/public/' . $path);
+                $ext = strtolower($uploadedFile->getClientOriginalExtension());
+
+                $text = $this->extractTextFromUploadedFile($fullPath, $ext, $lang);
             }
 
+            $contentForEmbedding = trim(
+                collect([$title, $summary, $text])
+                ->filter(fn ($value) => filled($value))
+                ->implode("\n")
+            );
+
+            if ($contentForEmbedding !== '') {
+                try {
+                    $ollama = OllamaClient::make();
+                    $vec = $ollama->embed($contentForEmbedding);
+
+                    DocumentEmbedding::updateOrCreate(
+                        [
+                            'document_id' => $doc->id,
+                            'lang'        => $lang,
+                        ],
+                        [
+                            'embedding'   => $vec,
+                        ]
+                    );
+                } catch (\Throwable $e) {
+                    Log::error('Embedding generation failed on update', [
+                        'document_id' => $doc->id,
+                        'lang' => $lang,
+                        'error' => $e->getMessage(),
+                    ]);
+                }
+            }
+
+            DocumentTranslation::updateOrCreate(
+                [
+                    'document_id' => $doc->id,
+                    'lang'        => $lang,
+                ],
+                [
+                    'title'      => $title,
+                    'content'    => $text,
+                    'summary'    => $summary,
+                    'file'       => $path,
+                    'file_path'  => $path,
+                    'file_type'  => $ext,
+                ]
+            );
         }
-        elseif ($ext === 'txt') {
 
-            $text = file_get_contents($fullPath);
+        Event::create([
+            'user_id'  => $user->id,
+            'action'   => 'updated',
+            'model'    => 'document',
+            'model_id' => $doc->id,
+        ]);
+    });
 
-        }
-        else {
-
-            \Log::warning('Unsupported file type', ['ext' => $ext]);
-            continue;
-
-        }
-    }
-
-
-
-    // 5. Сохранение
-    DocumentTranslation::updateOrCreate(
-        [
-            'document_id' => $doc->id,
-            'lang'        => $t['lang']
-        ],
-        [
-            'title'     => $t['title'],
-            'content'   => $text,
-            'file' => $path
-        ]
-    );
-
-
-}
-
-return $this->success($doc->load('translations','attachments','categories','functions'), "Updated");
+return $this->success(
+    $doc->fresh()->load([
+        'translations',
+        'attachments',
+        'categories',
+        'functions',
+    ]),
+    'Updated'
+);
 }
 
 
@@ -958,8 +1070,11 @@ return $this->success($doc->load('translations','attachments','categories','func
 )]
     public function destroy($id)
     {
-
         $doc = Document::find($id);
+        $user = auth()->user();
+        if (!$user || $user->hasRole('user') || $user->hasRole('accountant') || ($user->hasRole('editor') && $doc->created_by !== $user->id)) {
+            abort(403, "Forbidden");
+        }
         if (!$doc) return $this->error("Not found", 404);
 
         Storage::delete($doc->file_path);
@@ -995,6 +1110,10 @@ return $this->success($doc->load('translations','attachments','categories','func
 )]
     public function delete_attachment($id)
     {
+        $user = auth()->user(); 
+        if (!$user || $user->hasRole('user')) {
+            abort(403, "Forbidden");
+        }
 
         $doc = DocumentAttachment::find($id);
 

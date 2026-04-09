@@ -22,13 +22,14 @@ use App\Models\DocumentTranslation;
 use PhpOffice\PhpWord\IOFactory;
 use Maatwebsite\Excel\Facades\Excel;
 use Barryvdh\DomPDF\Facade\Pdf;
+use Illuminate\Validation\Rule;
 
 class UserController extends Controller
 {
     use ApiResponse;
     public function __construct()
     {
-        
+
     }
 
     private string $redirectUrl = 'https://admin.lookdesk.ai/';
@@ -37,25 +38,29 @@ class UserController extends Controller
      | SEND INVITE (AUTH)
      ============================================================ */
 
-    #[OA\Post(
+   #[OA\Post(
      path: "/api/team-invitations",
-     summary: "Invite user to team by email (sends accept/decline links)",
+     summary: "Invite user to team by email (sends accept link)",
      tags: ["Team Invitations"],
      security: [["sanctum" => []]],
      requestBody: new OA\RequestBody(
         required: true,
         content: new OA\JsonContent(
-            required: ["name", "email", 'role', 'functions_ids'],
+            required: ["name", "email", "role", "functions"],
             properties: [
                 new OA\Property(property: "name", type: "string", example: "name"),
                 new OA\Property(property: "email", type: "string", example: "user@example.com"),
-                new OA\Property(property: "role", type: "string", example: "users"),
+                new OA\Property(property: "role", type: "string", example: "user"),
                 new OA\Property(
-                    property: "functions_ids",
+                    property: "functions",
                     type: "array",
-                    items: new OA\Items(type: "integer"),
-                    example: [1, 2, 3]
-                )
+                    items: new OA\Items(
+                        type: "object",
+                        properties: [
+                            new OA\Property(property: "id", type: "integer", example: 1),
+                        ]
+                    )
+                ),
             ]
         )
     ),
@@ -64,336 +69,379 @@ class UserController extends Controller
         new OA\Response(response: 422, description: "Validation error"),
     ]
 )]
-    public function teamInvite(Request $request)
-    {
-        $me = $request->user();
-
-        $data = $request->validate([
-            'name' => ['required','string'],
-            'email' => ['required', 'email'],
-            'role' => ['required','string'],
-            'functions_ids' => ['required','array'],
-        ]);
-
-        $name = $data['name'];
-        $email = strtolower(trim($data['email']));
-        $role = strtolower(trim($data['role']));
-        $functions_ids = json_encode($data['functions_ids']);
-
-        // токен (сырой) + hash в базе
-        $rawToken = Str::random(64);
-        $tokenHash = hash('sha256', $rawToken);
-
-        // ✅ зашифрованный inviter_id в ссылке
-        $encryptedInviterId = Crypt::encryptString((string)$me->id);
-
-        // ✅ зашифрованный inviter_id в ссылке
-        $encryptedInviterName= Crypt::encryptString((string)$name);
-
-        // ✅ зашифрованный inviter_id в ссылке
-        $encryptedInviterEmail = Crypt::encryptString((string)$email);
-
-        // ✅ зашифрованный inviter_id в ссылке
-        $encryptedInviterRole = Crypt::encryptString((string)$role);
-
-        // ✅ зашифрованный inviter_id в ссылке
-        $encryptedInviterFunctionsIds = Crypt::encryptString($functions_ids);
-
-        // accept/decline ссылки
-        $acceptUrl = url('/api/team-invitations/accept') . '?token=' . urlencode($rawToken) . '&inv=' . urlencode($encryptedInviterId) . '&em=' . urlencode($encryptedInviterEmail). '&na=' . urlencode($encryptedInviterName). '&ro=' . urlencode($encryptedInviterRole). '&fu=' . urlencode($encryptedInviterFunctionsIds);
-        $declineUrl = $this->redirectUrl;
-
-        Mail::raw(
-            "You were invited to a team.\n\nAccept: {$acceptUrl}\nDecline: {$declineUrl}",
-            function ($m) use ($email) {
-                $m->to($email)->subject('Team invitation');
-            }
-        );
-
-        return $this->success([], 'Invitation sent');
+   public function teamInvite(Request $request)
+   {
+    $authUser = auth()->user();
+    $user = auth()->user();
+    if (!$user || $user->hasRole('user') || $user->hasRole('editor') || $user->hasRole('accountant')) {
+        abort(403, "Forbidden");
     }
 
-    /* ============================================================
-     | ACCEPT INVITE (PUBLIC)
-     ============================================================ */
+    $request->validate([
+        'name' => 'required|string',
+        'email' => [
+            'required',
+            'email',
+            Rule::unique('users', 'email')->withoutTrashed(),
+        ],
+        'role' => 'required|string|exists:roles,name',
+        'functions' => 'nullable|array',
+        'functions.*.id' => 'nullable|integer',
+    ]);
 
-    #[OA\Get(
-     path: "/api/team-invitations/accept",
-     summary: "Accept team invitation (public link). Sets user.client_creator_id and redirects to admin.lookdesk.ai",
-     tags: ["Team Invitations"],
-     parameters: [
-        new OA\Parameter(name: "token", in: "query", required: true, schema: new OA\Schema(type: "string")),
-        new OA\Parameter(name: "inv", in: "query", required: true, schema: new OA\Schema(type: "string")),
-        new OA\Parameter(name: "em", in: "query", required: true, schema: new OA\Schema(type: "string")),
-        new OA\Parameter(name: "na", in: "query", required: true, schema: new OA\Schema(type: "string")),
-        new OA\Parameter(name: "ro", in: "query", required: true, schema: new OA\Schema(type: "string")),
-        new OA\Parameter(name: "fu", in: "query", required: true, schema: new OA\Schema(type: "string")),
-    ],
-    responses: [
-        new OA\Response(response: 302, description: "Redirect to https://admin.lookdesk.ai/"),
-        new OA\Response(response: 400, description: "Invalid link"),
-    ]
+
+    if ($user->hasRole('admin') &&  in_array(strtolower($request->role),['owner', 'admin']) ) {
+        abort(403, "Forbidden");
+    }
+
+    
+
+    $role = Role::where('name', strtolower($request->role))->firstOrFail();
+
+    $inviteToken = Str::random(64);
+
+    $user = User::create([
+        'name' => $request->name,
+        'email' => $request->email,
+        'password' => '',
+        'role_id' => $role->id,
+        'client_creator_id' => $authUser->id,
+        'is_verified' => false,
+        'verification_code' => $inviteToken,
+    ]);
+
+    $functions = collect($request->functions ?? [])->pluck('id')->toArray();
+    $user->functions()->sync($functions);
+
+    $acceptUrl = url('/api/team-invitations/accept') . '?' . http_build_query([
+        'token' => $inviteToken
+    ]);
+
+    Mail::raw(
+        "You have been invited.\n\nOpen the link to activate your account:\n{$acceptUrl}",
+        function ($message) use ($user) {
+            $message->to($user->email)
+            ->subject('Invitation to join');
+        }
+    );
+
+    Event::create([
+        'user_id' => $authUser->id,
+        'action'  => 'invited',
+        'model'   => 'user',
+        'model_id'=> $user->id,
+    ]);
+
+    return $this->success([
+        'invite_link' => $acceptUrl,
+        'user_id' => $user->id,
+    ], 'Invitation sent', 200);
+}
+
+#[OA\Get(
+path: "/api/team-invitations/accept",
+summary: "Accept team invitation (public link). Activates invited user and redirects to admin.lookdesk.ai",
+tags: ["Team Invitations"],
+parameters: [
+    new OA\Parameter(name: "token", in: "query", required: true, schema: new OA\Schema(type: "string"))
+],
+responses: [
+    new OA\Response(response: 302, description: "Redirect to https://admin.lookdesk.ai/"),
+    new OA\Response(response: 400, description: "Invalid link"),
+]
 )]
-    public function accept(Request $request)
-    {
+public function accept(Request $request)
+{
+    try {
         $token = (string) $request->query('token', '');
-        $invEnc = Crypt::decryptString((string) $request->query('inv', ''));
-        $invEncEmail = Crypt::decryptString((string) $request->query('em', ''));
-        $invEncName = Crypt::decryptString((string) $request->query('na', ''));
-        $invEncRole = Crypt::decryptString((string) $request->query('ro', ''));
-        $invEncFunctionIds = json_decode(Crypt::decryptString((string) $request->query('fu', '')),1);
-
-        $userA = User::findOrFail($invEnc);
-
-        $roleId = Role::where('name', strtolower($invEncRole))->first()->id;
-
-    // ищем пользователя по email
-        $user = User::where('email', $invEncEmail)->first();
-
-        if ($user) {
-
-        // если существует — просто обновляем
-            $user->name = $invEncName;
-            $user->role_id = $roleId;
-            $user->client_creator_id = $invEnc;
-            $user->functions()->sync($invEncFunctionIds);
-            $user->save();
-
-        } else {
-
-        // если нет — создаём нового
-            $plainPassword = Str::random(10);
-
-            $user = User::create([
-                'name'              => $invEncName,
-                'email'             => $invEncEmail,
-                'password'          => Hash::make($plainPassword),
-                'role_id'           => $roleId,
-                'client_creator_id' => $invEnc,
-                'is_verified'       => true
-            ]);
-
-        // копируем функции
-            $user->functions()->sync(
-                $invEncFunctionIds
-            );
-
-        // отправляем письмо
-            Mail::raw("
-                Your account has been created.
-
-                Login: {$invEncEmail}
-                Password: {$plainPassword}
-
-                Please login and change your password.
-                ", function ($message) use ($invEncEmail) {
-                    $message->to($invEncEmail)
-                    ->subject('Your Account Credentials');
-                });
+        if (!$token) {
+            return redirect()->away($this->redirectUrl . '?invite=invalid');
         }
 
-        return redirect()->away($this->redirectUrl . '?invite=accepted');
-    }
 
-    private function sendVerification(User $user)
-    {
-        $code = random_int(100000, 999999);
+        $user = User::where('verification_code', $token)->first();
 
-        Mail::raw("Your verification code: {$code}", function ($m) use ($user) {
-            $m->to($user->email)->subject('Verify your account');
+        if (!$user) {
+            return redirect()->away($this->redirectUrl . '?invite=invalid');
+        }
+        $plainPassword = Str::random(10);
+        $user->is_verified = true;
+        $user->verification_code = null;
+        $user->password = Hash::make($plainPassword);
+        $user->save();
+
+        Mail::raw("
+           You have been invited.
+
+           Login: {$user->email}
+           Password: {$plainPassword}
+
+           Please login and change your password.
+           ", function ($message) use ($user) {
+            $message->to($user->email)
+            ->subject('Your Account Credentials');
         });
+
+
+        Event::create([
+            'user_id' => $user->id,
+            'action'  => 'accepted_invite',
+            'model'   => 'user',
+            'model_id'=> $user->id,
+        ]);
+
+        return redirect()->away($this->redirectUrl . '?invite=accepted');
+    } catch (\Throwable $e) {
+        return redirect()->away($this->redirectUrl . '?invite=invalid');
     }
+}
 
-    private function aiEconomics($owner_id): array
-    {
-        $daysAgo = now()->subDays(30);
+private function sendVerification(User $user)
+{
+    $code = random_int(100000, 999999);
 
-        $team_users_ids = User::where('client_creator_id', $owner_id)->pluck('id')->toArray();
+    Mail::send('emails.verify-code', [
+        'user' => $user,
+        'code' => $code,
+    ], function ($m) use ($user) {
+        $m->to($user->email)->subject('Verify your account');
+    });
+}
 
-        $team_users_ids[] = $owner_id;
+private function aiEconomics($owner_id): array
+{
+    $daysAgo = now()->subDays(30);
+
+    $team_users_ids = User::where('client_creator_id', $owner_id)->pluck('id')->toArray();
+
+    $team_users_ids[] = $owner_id;
 
     // Revenue query
-        $revenueQuery = Subscription::query()
-        ->whereIn('subscriptions.status', ['active', 'canceled', 'trialing'])
-        ->where('subscriptions.created_at', '>=', $daysAgo)
-        ->join('plan_prices', 'subscriptions.plan_price_id', '=', 'plan_prices.id');
+    $revenueQuery = Subscription::query()
+    ->whereIn('subscriptions.status', ['active', 'canceled', 'trialing'])
+    ->where('subscriptions.created_at', '>=', $daysAgo)
+    ->join('plan_prices', 'subscriptions.plan_price_id', '=', 'plan_prices.id');
 
-        $revenueQuery->whereIn('subscriptions.user_id', $team_users_ids);
-        $totalRevenue = (float) $revenueQuery->sum('plan_prices.price');
+    $revenueQuery->whereIn('subscriptions.user_id', $team_users_ids);
+    $totalRevenue = (float) $revenueQuery->sum('plan_prices.price');
 
     // AI answers query
-        $answersQuery = ChatMessage::query()
-        ->where('role', 'assistant')
-        ->where('created_at', '>=', $daysAgo);
-        $answersQuery->whereHas('session', fn ($q) => $q->whereIn('user_id', $team_users_ids));
-        $aiAnswers = (int) $answersQuery->count();
+    $answersQuery = ChatMessage::query()
+    ->where('role', 'assistant')
+    ->where('created_at', '>=', $daysAgo);
+    $answersQuery->whereHas('session', fn ($q) => $q->whereIn('user_id', $team_users_ids));
+    $aiAnswers = (int) $answersQuery->count();
 
-        $aiCost = round($aiAnswers * (float) config('ai.cost_per_answer', 0.002), 2);
+    $aiCost = round($aiAnswers * (float) config('ai.cost_per_answer', 0.002), 2);
 
-        $margin = $totalRevenue > 0
-        ? round((($totalRevenue - $aiCost) / $totalRevenue) * 100, 1)
-        : 0;
+    $margin = $totalRevenue > 0
+    ? round((($totalRevenue - $aiCost) / $totalRevenue) * 100, 1)
+    : 0;
 
-        return [
-            'total_revenue' => round($totalRevenue, 2),
-            'total_ai_cost' => $aiCost,
-            'net_margin'    => $margin,
-        ];
-    }
+    return [
+        'total_revenue' => round($totalRevenue, 2),
+        'total_ai_cost' => $aiCost,
+        'net_margin'    => $margin,
+    ];
+}
 
-    private function trashedUsersLast30Days($owner_id): int
-    {
+private function trashedUsersLast30Days($owner_id): int
+{
 
-        $from = now()->subDays(30);
+    $from = now()->subDays(30);
 
-        return User::onlyTrashed()->where('created_at', '>=', $from)->where('client_creator_id', $owner_id)->count();
-    }
+    return User::onlyTrashed()->where('created_at', '>=', $from)->where('client_creator_id', $owner_id)->count();
+}
 
-    private function activeUsersLast30Days($owner_id): int
-    {
-        $team_users_ids = User::where('client_creator_id', $owner_id)->pluck('id')->toArray();
+private function activeUsersLast30Days($owner_id): int
+{
+    $team_users_ids = User::where('client_creator_id', $owner_id)->pluck('id')->toArray();
 
-        $from = now()->subDays(30);
+    $from = now()->subDays(30);
 
-        return ChatSession::where('created_at', '>=', $from)
-        ->whereIn('user_id', $team_users_ids)
-        ->distinct('user_id')
-        ->count('user_id');
-    }
+    return ChatSession::where('created_at', '>=', $from)
+    ->whereIn('user_id', $team_users_ids)
+    ->distinct('user_id')
+    ->count('user_id');
+}
 
-    /* ============================================================
-     | GET USERS LIST
-     ============================================================ */
-    #[OA\Get(
-     path: "/api/users",
-     summary: "Get users list",
-     tags: ["Users"],
-     security: [["sanctum" => []]],
-     parameters: [
-        new OA\Parameter(name: "search", in: "query", schema: new OA\Schema(type: "string")),
-        new OA\Parameter(name: "username", in: "query", schema: new OA\Schema(type: "string")),
-        new OA\Parameter(name: "email", in: "query", schema: new OA\Schema(type: "string")),
-        new OA\Parameter(
-            name: "status",
-            in: "query",
-            description: "User status filter",
-            schema: new OA\Schema(
+#[OA\Get(
+path: "/api/users",
+summary: "Get users list",
+tags: ["Users"],
+security: [["sanctum" => []]],
+parameters: [
+    new OA\Parameter(name: "search", in: "query", schema: new OA\Schema(type: "string")),
+    new OA\Parameter(name: "username", in: "query", schema: new OA\Schema(type: "string")),
+    new OA\Parameter(name: "email", in: "query", schema: new OA\Schema(type: "string")),
+    new OA\Parameter(
+        name: "status",
+        in: "query",
+        description: "User status filter. Example: status=active,pending",
+        style: "form",
+        explode: false,
+        schema: new OA\Schema(
+            type: "array",
+            items: new OA\Items(
                 type: "string",
-                enum: ["active","inactive","pending","deleted"]
+                enum: ["active", "inactive", "pending", "deleted"]
             )
-        ),
-        new OA\Parameter(name: "role_id", in: "query", schema: new OA\Schema(type: "integer")),
-        new OA\Parameter(name: "role", in: "query", schema: new OA\Schema(type: "string")),
-        new OA\Parameter(name: "function_id", in: "query", schema: new OA\Schema(type: "integer")),
-        new OA\Parameter(name: "page", in: "query", schema: new OA\Schema(type: "integer")),
-    ],
-    responses: [
-        new OA\Response(response: 200, description: "List of users")
-    ]
+        )
+    ),
+    new OA\Parameter(name: "role_id", in: "query", schema: new OA\Schema(type: "integer")),
+    new OA\Parameter(name: "role", in: "query", schema: new OA\Schema(type: "string")),
+    new OA\Parameter(name: "function_id", in: "query", schema: new OA\Schema(type: "integer")),
+    new OA\Parameter(name: "page", in: "query", schema: new OA\Schema(type: "integer")),
+],
+responses: [
+    new OA\Response(response: 200, description: "List of users")
+]
 )]
-    public function index(Request $request)
-    {
-        $query = User::query()->withCount([
-            'documents as documents_count',
-            'sessions as sessions_chat_count',
-            'documentsTeam as documents_team_count',
-            'sessionsTeam as sessions_team_chat_count',
-            'clientUsers as client_users_count',
-        ])->with('role', 'functions',
+public function index(Request $request)
+{
+    $query = User::query()->withCount([
+        'documents as documents_count',
+        'sessions as sessions_chat_count',
+        'documentsTeam as documents_team_count',
+        'sessionsTeam as sessions_team_chat_count',
+        'clientUsers as client_users_count',
+    ])->with(
+        'role',
+        'functions',
         'subscription.plan',
         'subscription.plan.features',
         'subscription.plan.prices',
         'subscription.planPrice',
-        'payments');
+        'payments'
+    );
 
-        $me = auth()->user();
+    $me = auth()->user();
 
-        if ($me->hasRole('user') || $me->hasRole('client') || $me->hasRole('owner') || $me->hasRole('superadmin')) {
-            $query->where(function ($q) use ($me) {
-                $q->where('client_creator_id', $me->id)
-              ->orWhere('id', $me->id); // ✅ добавить себя
-          });
-        }
-
-        if ($request->username) {
-            $query->where('name', 'like', "%{$request->username}%");
-        }
-
-        if ($request->email) {
-            $query->where('email', 'like', "%{$request->email}%");
-        }
-
-        if ($request->search) {
-            $query->where(function ($q) use ($request) {
-                $q->where('name', 'like', "%{$request->search}%")
-                ->orWhere('email', 'like', "%{$request->search}%");
-            });
-        }
-
-        if ($request->status) {
-
-            switch ($request->status) {
-
-                case 'active':
-                $query->where('is_verified', true)
-                ->whereNull('deleted_at');
-                break;
-
-                case 'pending':
-                $query->where('is_verified', false)
-                ->whereNull('deleted_at');
-                break;
-
-                case 'inactive':
-                $query->onlyTrashed();
-                break;
-            }
-
-        }
-
-        if ($request->role) {
-            $roleId = Role::where('name', strtolower($request->role))->first()->id;
-            $query->where('role_id', $roleId);
-        }
-
-        if ($request->role_id) {
-            $query->where('role_id', $request->role_id);
-        }
-
-        if ($request->function_id) {
-            $query->whereHas('functions', fn($x) =>
-                $x->where('functions.id', $request->function_id)
-            );
-        }
-
-
-        return $this->success($query->paginate(20)->getCollection()->transform(function ($user) {
-            $user->documents_count = (int) $user->documents_count;
-            $user->sessions_chat_count = (int) $user->sessions_chat_count;
-           $user->is_online = $user->last_seen_at
-    ? strtotime($user->last_seen_at) > now()->subMinutes(5)->timestamp
-    : false;
-
-if ($user->deleted_at) {
-    $user->status = 'inactive';
-} elseif (!$user->is_verified) {
-    $user->status = 'pending';
-} else {
-    $user->status = 'active';
-}
-            if ($user->hasRole('owner')) {
-                $user->documents_team_count = (int) $user->documents_team_count + $user->documents_count;
-                $user->sessions_team_chat_count = (int) $user->sessions_team_chat_count + $user->sessions_chat_count;
-                $user->client_users_count = (int) $user->client_users_count;
-                $user->economist_30_last = $this->aiEconomics($user->id);
-                $user->active_users_last_30_days = $this->activeUsersLast30Days($user->id);
-                $user->deleted_users_last_30_days =  $this->trashedUsersLast30Days($user->id);
-            }
-            return $user;
-        }));
+    if ($me->hasRole('user') || $me->hasRole('client') || $me->hasRole('owner') || $me->hasRole('superadmin')) {
+        $query->where(function ($q) use ($me) {
+            $q->where('client_creator_id', $me->id)
+            ->orWhere('id', $me->id);
+        });
     }
 
+    if ($request->username) {
+        $query->where('name', 'like', "%{$request->username}%");
+    }
 
+    if ($request->email) {
+        $query->where('email', 'like', "%{$request->email}%");
+    }
+
+    if ($request->search) {
+        $query->where(function ($q) use ($request) {
+            $q->where('name', 'like', "%{$request->search}%")
+            ->orWhere('email', 'like', "%{$request->search}%");
+        });
+    }
+
+    if ($request->filled('status')) {
+        $statuses = $request->input('status', []);
+
+    // Поддержка и массива, и строки "active,pending"
+        if (!is_array($statuses)) {
+            $statuses = explode(',', $statuses);
+        }
+
+        $statuses = collect($statuses)
+        ->map(fn($status) => strtolower(trim($status)))
+        ->filter()
+        ->unique()
+        ->values()
+        ->all();
+
+        if (!empty($statuses)) {
+            $query->where(function ($q) use ($statuses) {
+                foreach ($statuses as $status) {
+                    switch ($status) {
+                        case 'active':
+                        $q->orWhere(function ($sub) {
+                            $sub->where('is_verified', true)
+                            ->whereNull('deleted_at');
+                        });
+                        break;
+
+                        case 'pending':
+                        $q->orWhere(function ($sub) {
+                            $sub->where('is_verified', false)
+                            ->whereNull('deleted_at');
+                        });
+                        break;
+
+                        case 'inactive':
+                        case 'deleted':
+                        $q->orWhereNotNull('deleted_at');
+                        break;
+                    }
+                }
+            });
+        }
+    }
+
+    if ($request->role) {
+        $role = Role::where('name', strtolower($request->role))->first();
+
+        if ($role) {
+            $query->where('role_id', $role->id);
+        }
+    }
+
+    if ($request->role_id) {
+        $query->where('role_id', $request->role_id);
+    }
+
+    if ($request->function_id) {
+        $query->whereHas('functions', fn($x) =>
+            $x->where('functions.id', $request->function_id)
+        );
+    }
+
+    $query->orderByRaw("
+        CASE
+        WHEN role_id = 1 THEN 0
+        WHEN deleted_at IS NULL AND is_verified = 1 THEN 1
+        ELSE 2
+        END ASC
+        ")->orderBy('id', 'desc');
+
+    $users = $query->paginate(20);
+
+    $users->getCollection()->transform(function ($user) {
+        $user->documents_count = (int) $user->documents_count;
+        $user->sessions_chat_count = (int) $user->sessions_chat_count;
+        $user->documents_team_count = (int) $user->documents_team_count;
+        $user->sessions_team_chat_count = (int) $user->sessions_team_chat_count;
+        $user->client_users_count = (int) $user->client_users_count;
+
+        $user->is_online = $user->last_seen_at
+        ? strtotime($user->last_seen_at) > now()->subMinutes(5)->timestamp
+        : false;
+
+        if ($user->deleted_at) {
+            $user->status = 'inactive';
+        } elseif (!$user->is_verified) {
+            $user->status = 'pending';
+        } else {
+            $user->status = 'active';
+        }
+
+        if ($user->hasRole('owner')) {
+            $user->documents_team_count += $user->documents_count;
+            $user->sessions_team_chat_count += $user->sessions_chat_count;
+            $user->economist_30_last = $this->aiEconomics($user->id);
+            $user->active_users_last_30_days = $this->activeUsersLast30Days($user->id);
+            $user->deleted_users_last_30_days = $this->trashedUsersLast30Days($user->id);
+        }
+
+        return $user;
+    });
+
+    return $this->success($users);
+}
     /* ============================================================
      | GET USERS LIST
      ============================================================ */
@@ -428,43 +476,43 @@ if ($user->deleted_at) {
 
 
         if ($me->hasRole('owner') || $me->hasRole('superadmin')) {
-             $query->where(function ($q) use ($me) {
-                $q->where('client_creator_id', $me->id)
+         $query->where(function ($q) use ($me) {
+            $q->where('client_creator_id', $me->id)
               ->orWhere('id', $me->id); // ✅ добавить себя
           });
-         } else {
-             $query->where(function ($q) use ($me) {
-                $q->where('client_creator_id', $me->client_creator_id)
+     } else {
+         $query->where(function ($q) use ($me) {
+            $q->where('client_creator_id', $me->client_creator_id)
               ->orWhere('id', $me->client_creator_id); // ✅ добавить себя
           });
-         }
+     }
 
 
-        return $this->success($query->paginate(20)->getCollection()->transform(function ($user) {
-            $user->documents_count = (int) $user->documents_count;
-            $user->sessions_chat_count = (int) $user->sessions_chat_count;
-           $user->is_online = $user->last_seen_at
-    ? strtotime($user->last_seen_at) > now()->subMinutes(5)->timestamp
-    : false;
+     return $this->success($query->paginate(20)->getCollection()->transform(function ($user) {
+        $user->documents_count = (int) $user->documents_count;
+        $user->sessions_chat_count = (int) $user->sessions_chat_count;
+        $user->is_online = $user->last_seen_at
+        ? strtotime($user->last_seen_at) > now()->subMinutes(5)->timestamp
+        : false;
 
-if ($user->deleted_at) {
-    $user->status = 'inactive';
-} elseif (!$user->is_verified) {
-    $user->status = 'pending';
-} else {
-    $user->status = 'active';
-}
-            if ($user->hasRole('owner')) {
-                $user->documents_team_count = (int) $user->documents_team_count + $user->documents_count;
-                $user->sessions_team_chat_count = (int) $user->sessions_team_chat_count + $user->sessions_chat_count;
-                $user->client_users_count = (int) $user->client_users_count;
-                $user->economist_30_last = $this->aiEconomics($user->id);
-                $user->active_users_last_30_days = $this->activeUsersLast30Days($user->id);
-                $user->deleted_users_last_30_days =  $this->trashedUsersLast30Days($user->id);
-            }
-            return $user;
-        }));
-    }
+        if ($user->deleted_at) {
+            $user->status = 'inactive';
+        } elseif (!$user->is_verified) {
+            $user->status = 'pending';
+        } else {
+            $user->status = 'active';
+        }
+        if ($user->hasRole('owner')) {
+            $user->documents_team_count = (int) $user->documents_team_count + $user->documents_count;
+            $user->sessions_team_chat_count = (int) $user->sessions_team_chat_count + $user->sessions_chat_count;
+            $user->client_users_count = (int) $user->client_users_count;
+            $user->economist_30_last = $this->aiEconomics($user->id);
+            $user->active_users_last_30_days = $this->activeUsersLast30Days($user->id);
+            $user->deleted_users_last_30_days =  $this->trashedUsersLast30Days($user->id);
+        }
+        return $user;
+    }));
+ }
 
     /* ============================================================
      | GET USERS LIST
@@ -500,10 +548,6 @@ if ($user->deleted_at) {
     {
         $user = auth()->user();
         // Разрешаем только: super admin, admin, owner
-        if (!in_array((int)$user->role_id, [7], true)) {
-            return $this->error('Forbidden', 403);
-        // или abort(403);
-        }
 
         $query = User::query()->withCount([
             'documents as documents_count',
@@ -573,17 +617,17 @@ if ($user->deleted_at) {
         return $this->success($query->paginate(20)->getCollection()->transform(function ($user) {
             $user->documents_count = (int) $user->documents_count;
             $user->sessions_chat_count = (int) $user->sessions_chat_count;
-           $user->is_online = $user->last_seen_at
-    ? strtotime($user->last_seen_at) > now()->subMinutes(5)->timestamp
-    : false;
+            $user->is_online = $user->last_seen_at
+            ? strtotime($user->last_seen_at) > now()->subMinutes(5)->timestamp
+            : false;
 
-if ($user->deleted_at) {
-    $user->status = 'inactive';
-} elseif (!$user->is_verified) {
-    $user->status = 'pending';
-} else {
-    $user->status = 'active';
-}
+            if ($user->deleted_at) {
+                $user->status = 'inactive';
+            } elseif (!$user->is_verified) {
+                $user->status = 'pending';
+            } else {
+                $user->status = 'active';
+            }
             if ($user->hasRole('owner')) {
                 $user->documents_team_count = (int) $user->documents_team_count + $user->documents_count;
                 $user->sessions_team_chat_count = (int) $user->sessions_team_chat_count + $user->sessions_chat_count;
@@ -605,7 +649,7 @@ if ($user->deleted_at) {
      summary: "Get users list",
      tags: ["Users"],
      security: [["sanctum" => []]],
-      parameters: [
+     parameters: [
         new OA\Parameter(name: "page", in: "query", schema: new OA\Schema(type: "integer")),
     ],
     responses: [
@@ -638,45 +682,48 @@ if ($user->deleted_at) {
 )]
 
     public function downloadXsl($id)
-{
-    $user = User::withCount([
-        'documents as documents_count',
-        'sessions as sessions_chat_count',
-        'documentsTeam as documents_team_count',
-        'sessionsTeam as sessions_team_chat_count',
-        'clientUsers as client_users_count',
-    ])->with(
-        'role',
-        'functions',
-        'subscription.plan',
-        'subscription.plan.features',
-        'subscription.plan.prices',
-        'subscription.planPrice',
-        'payments'
-    )->findOrFail($id);
+    {
+        if (!$user || $user->hasRole('user') || $user->hasRole('editor') || $user->hasRole('accountant')) {
+            abort(403, "Forbidden");
+        }
+        $user = User::withCount([
+            'documents as documents_count',
+            'sessions as sessions_chat_count',
+            'documentsTeam as documents_team_count',
+            'sessionsTeam as sessions_team_chat_count',
+            'clientUsers as client_users_count',
+        ])->with(
+            'role',
+            'functions',
+            'subscription.plan',
+            'subscription.plan.features',
+            'subscription.plan.prices',
+            'subscription.planPrice',
+            'payments'
+        )->findOrFail($id);
 
-    $user->is_online = $user->last_seen_at
+        $user->is_online = $user->last_seen_at
         ? strtotime($user->last_seen_at) > now()->subMinutes(5)->timestamp
         : false;
 
-    if ($user->deleted_at) {
-        $user->status = 'inactive';
-    } elseif (!$user->is_verified) {
-        $user->status = 'pending';
-    } else {
-        $user->status = 'active';
+        if ($user->deleted_at) {
+            $user->status = 'inactive';
+        } elseif (!$user->is_verified) {
+            $user->status = 'pending';
+        } else {
+            $user->status = 'active';
+        }
+
+        if ($user->hasRole('owner')) {
+            $user->economist_30_last = $this->aiEconomics($user->id);
+            $user->active_users_last_30_days = $this->activeUsersLast30Days($user->id);
+            $user->deleted_users_last_30_days = $this->trashedUsersLast30Days($user->id);
+        }
+
+        $fileName = 'user_'.$user->id.'_report_'.now()->format('Ymd_His').'.xlsx';
+
+        return Excel::download(new \App\Exports\UsersExport([$user]), $fileName);
     }
-
-    if ($user->hasRole('owner')) {
-        $user->economist_30_last = $this->aiEconomics($user->id);
-        $user->active_users_last_30_days = $this->activeUsersLast30Days($user->id);
-        $user->deleted_users_last_30_days = $this->trashedUsersLast30Days($user->id);
-    }
-
-    $fileName = 'user_'.$user->id.'_report_'.now()->format('Ymd_His').'.xlsx';
-
-    return Excel::download(new \App\Exports\UsersExport([$user]), $fileName);
-}
     /* ======================================================
      | FILE DOWNLOAD
      ====================================================== */
@@ -696,63 +743,66 @@ if ($user->deleted_at) {
 )]
 
     public function downloadPDF($id, Request $request)
-{
-    $user = User::withCount([
-        'documents as documents_count',
-        'sessions as sessions_chat_count',
-        'documentsTeam as documents_team_count',
-        'sessionsTeam as sessions_team_chat_count',
-        'clientUsers as client_users_count',
-    ])->with(
-        'role',
-        'functions',
-        'subscription.plan',
-        'subscription.plan.features',
-        'subscription.plan.prices',
-        'subscription.planPrice',
-        'payments'
-    )->findOrFail($id);
+    {
+        if (!$user || $user->hasRole('user') || $user->hasRole('editor') || $user->hasRole('accountant')) {
+            abort(403, "Forbidden");
+        }  
+        $user = User::withCount([
+            'documents as documents_count',
+            'sessions as sessions_chat_count',
+            'documentsTeam as documents_team_count',
+            'sessionsTeam as sessions_team_chat_count',
+            'clientUsers as client_users_count',
+        ])->with(
+            'role',
+            'functions',
+            'subscription.plan',
+            'subscription.plan.features',
+            'subscription.plan.prices',
+            'subscription.planPrice',
+            'payments'
+        )->findOrFail($id);
 
     // online
-    $user->is_online = $user->last_seen_at
+        $user->is_online = $user->last_seen_at
         ? strtotime($user->last_seen_at) > now()->subMinutes(5)->timestamp
         : false;
 
     // status
-    if ($user->deleted_at) {
-        $user->status = 'inactive';
-    } elseif (!$user->is_verified) {
-        $user->status = 'pending';
-    } else {
-        $user->status = 'active';
-    }
+        if ($user->deleted_at) {
+            $user->status = 'inactive';
+        } elseif (!$user->is_verified) {
+            $user->status = 'pending';
+        } else {
+            $user->status = 'active';
+        }
 
     // owner statistics
-    if ($user->hasRole('owner')) {
+        if ($user->hasRole('owner')) {
 
-        $user->documents_team_count = (int)$user->documents_team_count;
-        $user->sessions_team_chat_count = (int)$user->sessions_team_chat_count;
-        $user->client_users_count = (int)$user->client_users_count;
+            $user->documents_team_count = (int)$user->documents_team_count;
+            $user->sessions_team_chat_count = (int)$user->sessions_team_chat_count;
+            $user->client_users_count = (int)$user->client_users_count;
 
-        $user->economist_30_last = $this->aiEconomics($user->id);
-        $user->active_users_last_30_days = $this->activeUsersLast30Days($user->id);
-        $user->deleted_users_last_30_days = $this->trashedUsersLast30Days($user->id);
-    }
+            $user->economist_30_last = $this->aiEconomics($user->id);
+            $user->active_users_last_30_days = $this->activeUsersLast30Days($user->id);
+            $user->deleted_users_last_30_days = $this->trashedUsersLast30Days($user->id);
+        }
 
-    $fileName = 'user_'.$user->id.'_report_'.now()->format('Ymd_His').'.pdf';
+        $fileName = 'user_'.$user->id.'_report_'.now()->format('Ymd_His').'.pdf';
 
-    $pdf = Pdf::loadView('pdf.user-report', [
-        'user' => $user
-    ])->setPaper('a4');
+        $pdf = Pdf::loadView('pdf.user-report', [
+            'user' => $user
+        ])->setPaper('a4');
 
-    if ($request->boolean('isView')) {
-        return response($pdf->output(),200)
+        if ($request->boolean('isView')) {
+            return response($pdf->output(),200)
             ->header('Content-Type','application/pdf')
             ->header('Content-Disposition','inline; filename="'.$fileName.'"');
-    }
+        }
 
-    return $pdf->download($fileName);
-}
+        return $pdf->download($fileName);
+    }
 
 
     /* ============================================================
@@ -790,199 +840,276 @@ if ($user->deleted_at) {
     }
 
     /* ============================================================
+     | GET USER BY ID
+     ============================================================ */
+    #[OA\Get(
+     path: "/api/users/check-team/{email}",
+     summary: "Get check team user by EMAIL",
+     tags: ["Users"],
+     security: [["sanctum" => []]],
+     parameters: [
+        new OA\Parameter(
+            name: "email",
+            in: "path",
+            required: true,
+            schema: new OA\Schema(type: "string")
+        )
+    ],
+    responses: [
+        new OA\Response(response: 200, description: "User detail"),
+        new OA\Response(response: 404, description: "Not found"),
+    ]
+)]
+    public function checkTeam($email)
+    {
+        $user = User::where('email', $email)->first();
+        if (!$user) return $this->error("Not found", 404);
+        if ($user->client_creator_id) {
+           return $this->success(['message' => 'Yeap. User in team']); 
+       }
+
+
+       $c = User::where('client_creator_id',$user->client_creator_id)->count();
+
+       if ($c) {
+           return $this->success(['message' => 'Yeap. User is owner a team']); 
+       }
+       return $this->error(['message' => 'Not. User not in team']); 
+   }
+
+    /* ============================================================
      | CREATE USER (ADMIN ONLY)
      ============================================================ */
-    #[OA\Post(
+#[OA\Post(
      path: "/api/users",
      summary: "Create user",
      tags: ["Users"],
      security: [["sanctum" => []]],
-
      requestBody: new OA\RequestBody(
         required: true,
         content: new OA\MediaType(
-            mediaType: "multipart/form-data",
+            mediaType: "application/json",
             schema: new OA\Schema(
                 type: "object",
                 properties: [
-                 new OA\Property(property: "name", type: "string"),
-                 new OA\Property(property: "email", type: "string"),
-                 new OA\Property(property: "role_id", type: "integer"),
-                 new OA\Property(
-                    property: "functions[0][id]",
-                    type: "integer",
-                    example: "1"
-                ),
-
-
-                 new OA\Property(
-                    property: "functions[1][id]",
-                    type: "integer",
-                    example: "1"
-                ),
-
-             ]
-         )
+                    new OA\Property(property: "name", type: "string"),
+                    new OA\Property(property: "email", type: "string"),
+                    new OA\Property(property: "role_id", type: "integer"),
+                    new OA\Property(property: "role", type: "string"),
+                    new OA\Property(
+                        property: "functions",
+                        type: "array",
+                        items: new OA\Items(
+                            type: "object",
+                            properties: [
+                                new OA\Property(property: "id", type: "integer", example: 1),
+                            ]
+                        )
+                    ),
+                ]
+            )
         )
     ),
      responses: [
         new OA\Response(response: 201, description: "Verification code sent to user email"),
     ]
 )]
-    public function store(Request $request)
-    {
-
-        if (auth()->user()->hasRole('user') || auth()->user()->hasRole('client')) {
-            $request->validate([
-                'name'     => 'required|string',
-                'email'    => 'required|email|unique:users',
-                'role_id'  => 'nullable|integer|exists:roles,id', 
-                'role'  => 'nullable|integer|exists:roles,name', 
-                'functions'          => 'required|array',
-                'functions.*.id'   => 'required|integer',
-            ]);
-        } else {
-            $request->validate([
-                'name'     => 'required|string',
-                'email'    => 'required|email|unique:users',
-                'role_id'  => 'nullable|integer|exists:roles,id', 
-                'role'  => 'nullable|integer|exists:roles,name', 
-                'functions'          => 'nullable|array',
-                'functions.*.id'   => 'nullable|integer',
-            ]);
-        }
-
-        $role_id = $request->role_id;
-
-        if ($request->role) {
-           $role = \App\Models\Role::where('name', strtolower($request->role))->first();
-           $role_id = $role->id;
-       }
-
-       $plainPassword = Str::random(10);
-
-
-       $user = User::create([
-        'name'     => $request->name,
-        'email'    => $request->email,
-        'role_id'  => $role_id, 
-        'password' => Hash::make($plainPassword),
+public function store(Request $request)
+{
+   if (!$user || $user->hasRole('user') || $user->hasRole('editor') || $user->hasRole('accountant')) {
+    abort(403, "Forbidden");
+}
+if (auth()->user()->hasRole('user') || auth()->user()->hasRole('client')) {
+    $request->validate([
+        'name' => 'required|string',
+        'email' => [
+            'required',
+            'email',
+            Rule::unique('users', 'email')->withoutTrashed(),
+        ],
+        'role_id' => 'nullable|integer|exists:roles,id',
+        'role' => 'nullable|string|exists:roles,name',
+        'functions' => 'nullable|array',
+        'functions.*.id' => 'nullable|integer',
     ]);
-
-       $functions  = collect($request->functions)->pluck('id')->toArray();
-
-       $user->update([
-        'is_verified' => true,
-        'verification_code' => null,
+} else {
+    $request->validate([
+        'name' => 'required|string',
+        'email' => [
+            'required',
+            'email',
+            Rule::unique('users', 'email')->withoutTrashed(),
+        ],
+        'role_id' => 'nullable|integer|exists:roles,id',
+        'role' => 'nullable|string|exists:roles,name',
+        'functions' => 'nullable|array',
+        'functions.*.id' => 'nullable|integer',
     ]);
+}
 
-       $user->functions()->sync($functions ?? []);
-      // отправляем письмо
-       Mail::raw("
-        Your account has been created.
+$role_id = $request->role_id;
 
-        Login: {$request->email}
-        Password: {$plainPassword}
+if ($request->role) {
+    $role = \App\Models\Role::where('name', strtolower($request->role))->first();
+    $role_id = $role?->id;
+}
 
-        Please login and change your password.
-        ", function ($message) use ($invEncEmail) {
-            $message->to($invEncEmail)
-            ->subject('Your Account Credentials');
-        });
-     //$this->sendVerification($user);
-       Event::create([
-        'user_id' => auth()->user()->id,
-        'action'  => 'added',
-        'model' => 'user',
-        'model_id' => $user->id
-    ]);
+$plainPassword = Str::random(10);
 
-       return $this->success(null, 'Verification code sent to user email', 201);
-   }
+if ($user->hasRole('admin') &&  in_array(strtolower($request->role),['owner', 'admin']) ) {
+    abort(403, "Forbidden");
+}
 
-    /* ============================================================
-     | UPDATE USER
-     ============================================================ */
-    #[OA\Put(
-     path: "/api/users/{id}",
-     summary: "Update user",
-     tags: ["Users"],
-     security: [["sanctum" => []]],
-     requestBody: new OA\RequestBody(
+
+
+$user = User::create([
+    'name' => $request->name,
+    'email' => $request->email,
+    'role_id' => $role_id,
+    'password' => Hash::make($plainPassword),
+]);
+
+
+$user->update([
+    'is_verified' => true,
+    'verification_code' => null,
+]);
+
+
+if ($request->functions)  {
+  $functions  = collect($request->functions)->pluck('id')->toArray();
+
+  $user->functions()->sync($functions);
+
+}
+
+Mail::raw("
+    Your account has been created.
+
+    Login: {$request->email}
+    Password: {$plainPassword}
+
+    Please login and change your password.
+    ", function ($message) use ($request) {
+        $message->to($request->email)
+        ->subject('Your Account Credentials');
+    });
+
+Event::create([
+    'user_id' => auth()->user()->id,
+    'action' => 'added',
+    'model' => 'user',
+    'model_id' => $user->id
+]);
+
+return $this->success(null, 'Verification code sent to user email', 201);
+}
+
+   #[OA\Put(
+path: "/api/users/{id}",
+summary: "Update user",
+tags: ["Users"],
+security: [["sanctum" => []]],
+parameters: [
+    new OA\Parameter(
+        name: "id",
+        in: "path",
         required: true,
-        content: new OA\MediaType(
-            mediaType: "multipart/form-data",
-            schema: new OA\Schema(
-                type: "object",
-                properties: [
-                 new OA\Property(property: "name", type: "string"),
-                 new OA\Property(property: "email", type: "string"),
-                 new OA\Property(property: "password", type: "string"),
-                 new OA\Property(property: "role_id", type: "integer"),
-                 new OA\Property(
-                    property: "functions[0][id]",
-                    type: "integer",
-                    example: "1"
-                ),
-
-
-                 new OA\Property(
-                    property: "functions[1][id]",
-                    type: "integer",
-                    example: "1"
-                ),
-
-             ]
-         )
-        )
+        schema: new OA\Schema(type: "integer")
     ),
-     responses: [
-        new OA\Response(response: 200, description: "Updated"),
-        new OA\Response(response: 404, description: "Not found"),
-    ]
+],
+requestBody: new OA\RequestBody(
+    required: true,
+    content: new OA\JsonContent(
+        type: "object",
+        properties: [
+            new OA\Property(property: "name", type: "string"),
+            new OA\Property(property: "email", type: "string"),
+            new OA\Property(property: "password", type: "string"),
+            new OA\Property(property: "role", type: "string", example: "owner"),
+            new OA\Property(
+                property: "functions",
+                type: "array",
+                items: new OA\Items(
+                    type: "object",
+                    properties: [
+                        new OA\Property(property: "id", type: "integer", example: 1),
+                    ]
+                )
+            ),
+        ]
+    )
+),
+responses: [
+    new OA\Response(response: 200, description: "Updated"),
+    new OA\Response(response: 404, description: "Not found"),
+]
 )]
-    public function update(Request $request, $id)
-    {
+   public function update(Request $request, $id)
+   {
 
-        $user = User::find($id);
-        if (!$user) return $this->error("Not found", 404);
+       $request->validate([
+        'name' => 'nullable|string',
+        'email' => 'nullable|email|unique:users,email',
+        'role' => 'nullable|string|exists:roles,name',
+        'functions'          => 'nullable|array',
+        'functions.*.id'   => 'nullable|integer',
+        'password' => 'nullable|string',
+    ]);
 
-        if ($request->name) {
-            $user->name = $request->name;
-        }
+       $user = User::find($id);
+       if (!$user) return $this->error("Not found", 404);
 
-        if ($request->email) {
-            $request->validate(['email' => 'email|unique:users,email,' . $id]);
-            $user->email = $request->email;
-        }
-
-        if ($request->password) {
-            $user->password = Hash::make($request->password);
-        }
-
-        if ($request->role_id) {
-            $request->validate(['role_id' => 'integer|exists:roles,id']);
-            $user->role_id = $request->role_id;
-        }
-
-        if ($request->role) {
-            $role = \App\Models\Role::where('name', strtolower($request->role))->first();
-            $user->role_id = $role->id;
-        }
-
-        $user->save();
-
-        $functions  = $request->functions;
-
-        $user->functions()->sync($functions);
-
-        return $this->success($user->load('role',
-            'subscription.plan',
-            'subscription.plan.features',
-            'subscription.plan.prices',
-            'subscription.planPrice',
-            'payments'), "Updated");
+       if ($user->hasRole('admin') &&  in_array(strtolower($request->role),['owner', 'admin']) ) {
+        abort(403, "Forbidden");
     }
+
+    
+
+    if ($request->name) {
+        $user->name = $request->name;
+    }
+
+
+
+    if ($request->email) {
+        $request->validate(['email' => 'email|unique:users,email,' . $id]);
+        $user->email = $request->email;
+    }
+
+    if ($request->password) {
+        $user->password = Hash::make($request->password);
+    }
+
+    if ($request->role_id) {
+        $request->validate(['role_id' => 'integer|exists:roles,id']);
+        $user->role_id = $request->role_id;
+    }
+
+    if ($request->role) {
+        $role = \App\Models\Role::where('name', strtolower($request->role))->first();
+        $user->role_id = $role->id;
+    }
+
+    $user->save();
+
+    if ($request->functions)  {
+      $functions  = collect($request->functions)->pluck('id')->toArray();
+
+      $user->functions()->sync($functions);
+
+  }
+
+
+
+  return $this->success($user->load('role',
+    'functions',
+    'subscription.plan',
+    'subscription.plan.features',
+    'subscription.plan.prices',
+    'subscription.planPrice',
+    'payments'), "Updated");
+}
 
     /* ============================================================
      | DELETE USER
@@ -992,14 +1119,31 @@ if ($user->deleted_at) {
      summary: "Delete user",
      tags: ["Users"],
      security: [["sanctum" => []]],
-     responses: [
+     parameters: [
+        new OA\Parameter(
+            name: "id",
+            in: "path",
+            required: true,
+            schema: new OA\Schema(type: "integer")
+        ),
+    ],
+    responses: [
         new OA\Response(response: 200, description: "Deleted"),
         new OA\Response(response: 404, description: "Not found"),
     ]
 )]
     public function destroy($id)
     {
+        if (!$user || $user->hasRole('user') || $user->hasRole('editor') || $user->hasRole('accountant')) {
+            abort(403, "Forbidden");
+        }
         $user = User::find($id);
+
+        if ($user->hasRole('admin') &&  ($user->hasRole('owner') || $user->hasRole('admin'))) {
+            abort(403, "Forbidden");
+        }
+
+        
         if (!$user) return $this->error("Not found", 404);
 
         Event::create([

@@ -90,6 +90,7 @@ Route::middleware(['auth:sanctum', 'update_last_seen'])->group(function () {
     Route::get('users-superadmin',       [UserController::class, 'index2']);
     Route::get('team-users/{id}',  [UserController::class, 'teamUsers']);
     Route::get('users',       [UserController::class, 'index']);
+        Route::get('users/check-team/{email}',  [UserController::class, 'checkTeam']);
     Route::get('users/{id}',  [UserController::class, 'show']);
     Route::post('users',      [UserController::class, 'store']);
     Route::post('users',      [UserController::class, 'store']);

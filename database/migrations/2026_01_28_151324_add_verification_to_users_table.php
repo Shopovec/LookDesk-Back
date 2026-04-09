@@ -15,7 +15,7 @@ class AddVerificationToUsersTable extends Migration
     {
         Schema::table('users', function (Blueprint $table) {
             $table->boolean('is_verified')->default(false);
-            $table->string('verification_code', 6)->nullable();
+            $table->string('verification_code', 64)->nullable();
         });
     }
 

@@ -55,7 +55,11 @@ class SupportChatController extends Controller
 )]
     public function create(Request $request)
     {
-    	$request->validate([
+    	$user = auth()->user();
+        if (!$user || $user->hasRole('user') || $user->hasRole('editor') || $user->hasRole('accountant')) {
+            abort(403, "Forbidden");
+        }
+        $request->validate([
     		'subject' => 'nullable|string|max:255',
     		'message' => 'required|string',
             'attachments'          => 'nullable|array',
@@ -130,15 +134,19 @@ class SupportChatController extends Controller
 
     public function show($id)
     {
-    	$chat = ChatThread::with('messages.user','messages.attachments')->findOrFail($id);
+    	$chat = ChatThread::with([
+    'messages' => function ($q) {
+        $q->orderBy('id', 'asc'); // или created_at
+    },'messages.user','messages.attachments'])->findOrFail($id);
 
     	$user = auth()->user();
 
-    	if ($chat->user_id !== $user->id && !in_array($user->role_id,[7])) {
-    		abort(403);
+    	if ($chat->user_id == $user->id  || in_array($user->role_id,[1,2,7])) {
+                return $this->success($chat);
+    		
     	}
-
-    	return $this->success($chat);
+abort(403);
+    
     }
 
     #[OA\Get(
@@ -154,9 +162,21 @@ class SupportChatController extends Controller
         $user = auth()->user();
 
         if ($user->hasRole('superadmin')) {
-             $chat = ChatThread::with('messages.user','messages.attachments')->where('assigned_admin_id', $user->id)->orderBy('id', 'DESC')->first();
+             $chat = ChatThread::with([
+    'messages' => function ($q) {
+        $q->orderBy('id', 'asc'); // или created_at
+    },
+    'messages.user',
+    'messages.attachments'
+])->where('assigned_admin_id', $user->id)->orderBy('id', 'DESC')->first();
         } else {
-             $chat = ChatThread::with('messages.user','messages.attachments')->where('user_id', $user->id)->orderBy('id', 'DESC')->first();
+             $chat = ChatThread::with([
+    'messages' => function ($q) {
+        $q->orderBy('id', 'asc'); // или created_at
+    },
+    'messages.user',
+    'messages.attachments'
+])->where('user_id', $user->id)->orderBy('id', 'DESC')->first();
         }
 
         if (!$chat) {
