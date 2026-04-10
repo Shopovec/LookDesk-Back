@@ -69,13 +69,12 @@ class AISearchService
         $text = OpenAIClient::chat($messages);
 
           // 5) Генерируем заголовок для сессии, если он пустой
-        if (empty($session->title)) {
-            $generatedTitle = $this->generateSessionTitle($userQuery, $text);
+          // Каждый раз обновляем title по содержимому диалога
+        $generatedTitle = $this->generateSessionTitleFromSession($session);
 
-            if ($generatedTitle) {
-                $session->title = $generatedTitle;
-                $session->save();
-            }
+        if ($generatedTitle) {
+            $session->title = $generatedTitle;
+            $session->save();
         }
 
         return [
@@ -87,6 +86,58 @@ class AISearchService
                 'preferred_lang' => $preferredLang,
             ],
         ];
+    }
+
+     /**
+     * Генерирует title на основе последних сообщений диалога.
+     */
+     private function generateSessionTitleFromSession(ChatSession $session): ?string
+     {
+        $messages = $session->messages()
+        ->orderByDesc('id')
+        ->limit(10)
+        ->get(['role', 'content'])
+        ->reverse()
+        ->values();
+
+        if ($messages->isEmpty()) {
+            return null;
+        }
+
+        $dialogText = $messages
+        ->map(function ($m) {
+            $role = $m->role === 'assistant' ? 'Assistant' : 'User';
+            return $role . ': ' . $this->oneLine((string) $m->content);
+        })
+        ->implode("\n");
+
+        $system = <<<SYS
+        You create short chat titles based on the conversation.
+
+        Rules:
+        - Return ONLY the title text
+        - Maximum 6 words
+        - No quotes
+        - No markdown
+        - Use the same language as the conversation
+        - Reflect the latest topic of the conversation
+        - Make the title specific and clear
+        SYS;
+
+        $title = trim((string) OpenAIClient::chat([
+            ['role' => 'system', 'content' => $system],
+            ['role' => 'user', 'content' => "Conversation:\n" . $dialogText],
+        ]));
+
+        $title = preg_replace('/^["\'`]+|["\'`]+$/u', '', $title);
+        $title = preg_replace('/\s+/u', ' ', $title);
+        $title = trim($title);
+
+        if (mb_strlen($title) > 120) {
+            $title = mb_substr($title, 0, 120);
+        }
+
+        return $title !== '' ? $title : null;
     }
 
         /**
