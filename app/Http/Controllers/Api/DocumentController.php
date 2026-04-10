@@ -897,25 +897,25 @@ public function update($id, Request $request)
     if (!$doc) return $this->error("Not found", 404);
 
     $validated = $request->validate([
-     'is_public'             => 'nullable|in:0,1,true,false,TRUE,FALSE,True,False',
-     'only_view'             => 'nullable|in:0,1,true,false,TRUE,FALSE,True,False',
-     'confidential'             => 'nullable|in:0,1,true,false,TRUE,FALSE,True,False',
+       'is_public'             => 'nullable|in:0,1,true,false,TRUE,FALSE,True,False',
+       'only_view'             => 'nullable|in:0,1,true,false,TRUE,FALSE,True,False',
+       'confidential'             => 'nullable|in:0,1,true,false,TRUE,FALSE,True,False',
 
-     'file' => 'nullable|file',
+       'file' => 'nullable|file',
 
 
-     'categories'          => 'required|array',
-     'categories.*.id'   => 'required|integer',
-     'functions'          => 'required|array',
-     'functions.*.id'   => 'required|integer',
-     'attachments'          => 'nullable|array',
-     'attachments.*.file' => 'nullable|file',
-     'translations'          => 'required|array',
-     'translations.*.lang'   => 'required|string|in:en,ru,uk',
-     'translations.*.title'  => 'required|string|max:255',
-     'translations.*.file' => 'nullable|file',
-     'translations.*.description' => 'nullable|string',
- ]);
+       'categories'          => 'required|array',
+       'categories.*.id'   => 'required|integer',
+       'functions'          => 'required|array',
+       'functions.*.id'   => 'required|integer',
+       'attachments'          => 'nullable|array',
+       'attachments.*.file' => 'nullable|file',
+       'translations'          => 'required|array',
+       'translations.*.lang'   => 'required|string|in:en,ru,uk',
+       'translations.*.title'  => 'required|string|max:255',
+       'translations.*.file' => 'nullable|file',
+       'translations.*.description' => 'nullable|string',
+   ]);
 
 
     $request->is_public = $request->is_public == 'true' ||  $request->is_public == 1 ? 1 : 0;
@@ -1126,122 +1126,179 @@ return $this->success(
         return $this->success(null, "Deleted");
     }
 
-     /* ======================================================
-     | FILE DOWNLOAD
-     ====================================================== */
-    #[OA\Get(
-     path: "/api/documents/{id}/download/xsl",
-     summary: "Download document file",
-     tags: ["Documents"],
-     parameters: [
-        new OA\Parameter(name: "id", in: "path", schema: new OA\Schema(type: "integer")),
-        new OA\Parameter(name: "lang", in: "query", schema: new OA\Schema(type: "string"))
-    ],
-    security: [["sanctum" => []]],
-
-    responses: [
-        new OA\Response(response: 200, description: "File downloaded")
-    ]
-)]
-
-    public function downloadXsl($id, Request $request)
-    {
-        $lang = $request->get('lang', 'en');
-        $q = Document::where('id', $id)->with(['translations','categories','functions']);
-
-
-        $items = $q->orderBy('id', 'desc')->get();
-
-        $items->transform(function ($doc) use ($lang) {
-
-           DocumentView::create([
-            'document_id' => $doc->id,
-            'user_id' => auth()->id()
-        ]);
-
-           $doc->translated = $doc->getTranslation($lang);
-
-           $doc->views_last_30_days = $doc->views()
-           ->where('created_at','>=',now()->subDays(30))
-           ->count();
-
-           $doc->ai_searches_last_30_days = isset($doc->translated['title']) ? ChatMessage::where('role','user')
-           ->where('created_at','>=',now()->subDays(30))
-           ->where('content','like','%'.$doc->translated['title'].'%')
-           ->count() : 0;
-
-           return $doc;
-       });
-
-        // ✅ EXPORT XLSX
-
-        $fileName = 'documents_' . now()->format('Ymd_His') . '.xlsx';
-        return Excel::download(new DocumentsExport($items), $fileName);
-
-    }
     /* ======================================================
-     | FILE DOWNLOAD
-     ====================================================== */
-    #[OA\Get(
-     path: "/api/documents/{id}/download/pdf",
-     summary: "Download document file",
-     tags: ["Documents"],
-     parameters: [
-        new OA\Parameter(name: "id", in: "path", schema: new OA\Schema(type: "integer")),
-        new OA\Parameter(name: "lang", in: "query", schema: new OA\Schema(type: "string")),
-        new OA\Parameter(name: "isView", in: "query", schema: new OA\Schema(type: "boolean"))
-    ],
-    security: [["sanctum" => []]],
-
-    responses: [
-        new OA\Response(response: 200, description: "File downloaded")
-    ]
+| FILE DOWNLOAD LIST XLSX BY IDS
+====================================================== */
+#[OA\Get(
+path: "/api/documents/download/xsl",
+summary: "Download documents list as XLSX by ids",
+tags: ["Documents"],
+security: [["sanctum" => []]],
+parameters: [
+    new OA\Parameter(
+        name: "ids",
+        in: "query",
+        description: "Document IDs",
+        required: true,
+        style: "form",
+        explode: true,
+        schema: new OA\Schema(
+            type: "array",
+            items: new OA\Items(type: "integer")
+        )
+    ),
+    new OA\Parameter(
+        name: "lang",
+        in: "query",
+        schema: new OA\Schema(type: "string", default: "en")
+    )
+],
+responses: [
+    new OA\Response(response: 200, description: "Documents XLSX downloaded"),
+    new OA\Response(response: 422, description: "Validation error")
+]
 )]
+public function downloadXsl(Request $request)
+{
+    $request->validate([
+        'ids' => ['nullable', 'array', 'min:1'],
+        'ids.*' => ['integer', 'exists:documents,id'],
+        'lang' => ['nullable', 'string'],
+    ]);
 
-    public function downloadPDF($id, Request $request)
-    {
-        $lang = $request->get('lang', 'en');
-        $q = Document::where('id', $id)->with(['translations','categories','functions']);
+    $lang = $request->get('lang', 'en');
+    $ids = array_map('intval', $request->get('ids', []));
+
+    $items = $ids ? Document::whereIn('id', $ids)
+    ->with(['translations', 'categories', 'functions'])
+    ->get()
+    ->sortBy(function ($doc) use ($ids) {
+        return array_search($doc->id, $ids);
+    })
+    ->values() : Document::with(['translations', 'categories', 'functions'])
+    ->get()
+    ->sortBy(function ($doc) use ($ids) {
+        return array_search($doc->id, $ids);
+    })
+    ->values();
+
+    $items->transform(function ($doc) use ($lang) {
+        $doc->translated = $doc->getTranslation($lang);
+
+        $doc->views_last_30_days = $doc->views()
+        ->where('created_at', '>=', now()->subDays(30))
+        ->count();
+
+        $doc->ai_searches_last_30_days = isset($doc->translated['title'])
+        ? ChatMessage::where('role', 'user')
+        ->where('created_at', '>=', now()->subDays(30))
+        ->where('content', 'like', '%' . $doc->translated['title'] . '%')
+        ->count()
+        : 0;
+
+        return $doc;
+    });
+
+    $fileName = 'documents_list_' . now()->format('Ymd_His') . '.xlsx';
+
+    return Excel::download(new DocumentsExport($items), $fileName);
+}
 
 
-        $items = $q->orderBy('id', 'desc')->get();
+/* ======================================================
+| FILE DOWNLOAD LIST PDF BY IDS
+====================================================== */
+#[OA\Get(
+path: "/api/documents/download/pdf",
+summary: "Download documents list as PDF by ids",
+tags: ["Documents"],
+security: [["sanctum" => []]],
+parameters: [
+    new OA\Parameter(
+        name: "ids",
+        in: "query",
+        description: "Document IDs",
+        required: true,
+        style: "form",
+        explode: true,
+        schema: new OA\Schema(
+            type: "array",
+            items: new OA\Items(type: "integer")
+        )
+    ),
+    new OA\Parameter(
+        name: "lang",
+        in: "query",
+        schema: new OA\Schema(type: "string", default: "en")
+    ),
+    new OA\Parameter(
+        name: "isView",
+        in: "query",
+        schema: new OA\Schema(type: "boolean")
+    )
+],
+responses: [
+    new OA\Response(response: 200, description: "Documents PDF downloaded"),
+    new OA\Response(response: 422, description: "Validation error")
+]
+)]
+public function downloadPDF(Request $request)
+{
+    $request->validate([
+        'ids' => ['nullable', 'array', 'min:1'],
+        'ids.*' => ['integer', 'exists:documents,id'],
+        'lang' => ['nullable', 'string'],
+        'isView' => ['nullable'],
+    ]);
 
-        $items->transform(function ($doc) use ($lang) {
+    $lang = $request->get('lang', 'en');
+    $ids = array_map('intval', $request->get('ids', []));
 
-           DocumentView::create([
-            'document_id' => $doc->id,
-            'user_id' => auth()->id()
-        ]);
+     $items = $ids ? Document::whereIn('id', $ids)
+    ->with(['translations', 'categories', 'functions'])
+    ->get()
+    ->sortBy(function ($doc) use ($ids) {
+        return array_search($doc->id, $ids);
+    })
+    ->values() : Document::with(['translations', 'categories', 'functions'])
+    ->get()
+    ->sortBy(function ($doc) use ($ids) {
+        return array_search($doc->id, $ids);
+    })
+    ->values();
 
-           $doc->translated = $doc->getTranslation($lang);
+    $items->transform(function ($doc) use ($lang) {
+        $doc->translated = $doc->getTranslation($lang);
 
-           $doc->views_last_30_days = $doc->views()
-           ->where('created_at','>=',now()->subDays(30))
-           ->count();
+        $doc->views_last_30_days = $doc->views()
+        ->where('created_at', '>=', now()->subDays(30))
+        ->count();
 
-           $doc->ai_searches_last_30_days = isset($doc->translated['title']) ? ChatMessage::where('role','user')
-           ->where('created_at','>=',now()->subDays(30))
-           ->where('content','like','%'.$doc->translated['title'].'%')
-           ->count() : 0;
+        $doc->ai_searches_last_30_days = isset($doc->translated['title'])
+        ? ChatMessage::where('role', 'user')
+        ->where('created_at', '>=', now()->subDays(30))
+        ->where('content', 'like', '%' . $doc->translated['title'] . '%')
+        ->count()
+        : 0;
 
-           return $doc;
-       });
-        $fileName = 'documents_' . now()->format('Ymd_His') . '.pdf';
+        return $doc;
+    });
 
-        $pdf = Pdf::loadView('pdf.documents', [
-            'documents' => $items,
-            'user' => auth()->user(),
-        ])->setPaper('a4');
+    $fileName = 'documents_list_' . now()->format('Ymd_His') . '.pdf';
 
-        if ($request->boolean('isView')) {
-            return response($pdf->output(), 200)
-            ->header('Content-Type', 'application/pdf')
-            ->header('Content-Disposition', 'inline; filename="'.$fileName.'"');
-        }
+    $pdf = Pdf::loadView('pdf.documents', [
+        'documents' => $items,
+        'user' => auth()->user(),
+    ])->setPaper('a4');
 
-        return $pdf->download($fileName);
-
+    if ($request->boolean('isView')) {
+        return response($pdf->output(), 200)
+        ->header('Content-Type', 'application/pdf')
+        ->header('Content-Disposition', 'inline; filename="' . $fileName . '"');
     }
+
+    return $pdf->download($fileName);
+}
 
     /* ======================================================
      | OWNER / ADMIN VALIDATION

@@ -19,8 +19,8 @@ class AISearchService
     public function answer(ChatSession $session, ?string $preferredLang = null): array
     {
         $userQuery = collect($session->messages)
-    ->where('role','user')
-    ->last()['content'] ?? '';
+        ->where('role','user')
+        ->last()['content'] ?? '';
 
         // 1) Каталог: все переводы (или можно ограничить языком/количеством)
         $catalogLimit = (int) config('ai.catalog_limit', 400);
@@ -38,27 +38,27 @@ class AISearchService
         $context = $this->buildFullContext($docs, $maxChars);
 
         $system = <<<SYS
-You are LookDesk AI assistant.
-Answer strictly using the DOCUMENTS below.
-If the answer is not found in the documents, say exactly: "Not found in knowledge base".
-Cite sources as (Doc ID: X, lang: Y).
-Keep answers short and structured.
-SYS;
+        You are LookDesk AI assistant.
+        Answer strictly using the DOCUMENTS below.
+        If the answer is not found in the documents, say exactly: "Not found in knowledge base".
+        Cite sources as (Doc ID: X, lang: Y).
+        Keep answers short and structured.
+        SYS;
 
-       $messagesCollection = $session->messages()
-    ->orderByDesc('id')
-    ->limit(10)
-    ->get(['role','content'])
-    ->reverse()
-    ->values();
+        $messagesCollection = $session->messages()
+        ->orderByDesc('id')
+        ->limit(10)
+        ->get(['role','content'])
+        ->reverse()
+        ->values();
 
-    $history = $messagesCollection
-    ->slice(0, -1)
-    ->map(fn ($m) => [
-        'role' => $m->role,
-        'content' => $m->content
-    ])
-    ->toArray();
+        $history = $messagesCollection
+        ->slice(0, -1)
+        ->map(fn ($m) => [
+            'role' => $m->role,
+            'content' => $m->content
+        ])
+        ->toArray();
 
         $messages = array_merge(
             [['role' => 'system', 'content' => $system . "\n\nDOCUMENTS:\n" . ($context ?: 'No docs found')]],
@@ -67,6 +67,16 @@ SYS;
         );
 
         $text = OpenAIClient::chat($messages);
+
+          // 5) Генерируем заголовок для сессии, если он пустой
+        if (empty($session->title)) {
+            $generatedTitle = $this->generateSessionTitle($userQuery, $text);
+
+            if ($generatedTitle) {
+                $session->title = $generatedTitle;
+                $session->save();
+            }
+        }
 
         return [
             'text' => $text,
@@ -79,7 +89,44 @@ SYS;
         ];
     }
 
-    /* ===================== CATALOG ===================== */
+        /**
+     * Генерация короткого заголовка для ChatSession.
+     */
+        private function generateSessionTitle(string $userQuery, string $assistantAnswer = ''): ?string
+        {
+            $system = <<<SYS
+            You create short chat titles.
+
+            Rules:
+            - Return ONLY the title text
+            - Maximum 6 words
+            - No quotes
+            - No markdown
+            - Use the same language as the user query
+            - Make it clear and specific
+            SYS;
+
+            $messages = [
+                ['role' => 'system', 'content' => $system],
+                ['role' => 'user', 'content' => "User query: {$userQuery}\n\nAssistant answer: {$assistantAnswer}"],
+            ];
+
+            $title = trim((string) OpenAIClient::chat($messages));
+
+        // очистка
+            $title = preg_replace('/^["\'`]+|["\'`]+$/u', '', $title);
+            $title = preg_replace('/\s+/u', ' ', $title);
+            $title = trim($title);
+
+        // ограничим длину на всякий случай
+            if (mb_strlen($title) > 120) {
+                $title = mb_substr($title, 0, 120);
+            }
+
+            return $title !== '' ? $title : null;
+        }
+
+        /* ===================== CATALOG ===================== */
 
     /**
      * Каталог документов для первичного выбора (LLM-retrieval).
@@ -91,24 +138,24 @@ SYS;
     private function getCatalog(?string $lang = null, int $limit = 400): array
     {
         $q = DocumentTranslation::query()
-            ->select(['document_id', 'lang', 'title', 'content'])
-            ->orderByDesc('updated_at')
-            ->limit($limit);
+        ->select(['document_id', 'lang', 'title', 'content'])
+        ->orderByDesc('updated_at')
+        ->limit($limit);
 
         if ($lang) {
             $q->where('lang', $lang);
         }
 
         return $q->get()
-            ->map(function ($t) {
-                return [
-                    'document_id' => (int) $t->document_id,
-                    'lang'        => (string) $t->lang,
-                    'title'       => (string) ($t->title ?? ''),
-                    'preview'     => $t->content ?? '',
-                ];
-            })
-            ->toArray();
+        ->map(function ($t) {
+            return [
+                'document_id' => (int) $t->document_id,
+                'lang'        => (string) $t->lang,
+                'title'       => (string) ($t->title ?? ''),
+                'preview'     => $t->content ?? '',
+            ];
+        })
+        ->toArray();
     }
 
     /* ===================== LLM PICK DOCS ===================== */
@@ -120,51 +167,51 @@ SYS;
     private function pickDocIdsByLLM(string $userQuery, array $catalog, int $pick = 6): array
     {
         $system = <<<SYS
-You are a retrieval assistant for a knowledge base.
+        You are a retrieval assistant for a knowledge base.
 
-Select the most relevant documents for the user's query by searching BOTH:
-- title
-- content/preview
+        Select the most relevant documents for the user's query by searching BOTH:
+        - title
+        - content/preview
 
-If the query explicitly mentions an exact title (e.g. "Contract EN"), you MUST include that document if present.
+        If the query explicitly mentions an exact title (e.g. "Contract EN"), you MUST include that document if present.
 
-Return ONLY valid JSON in this exact format: {"ids":[123,456]}
-Return document_id values only. Never return list indexes.
-Pick up to {$pick} document_id values.
-SYS;
+        Return ONLY valid JSON in this exact format: {"ids":[123,456]}
+        Return document_id values only. Never return list indexes.
+        Pick up to {$pick} document_id values.
+        SYS;
 
-$lines = [];
-foreach ($catalog as $d) {
-    $lines[] = json_encode([
-        'document_id' => (int)($d['document_id'] ?? 0),
+        $lines = [];
+        foreach ($catalog as $d) {
+            $lines[] = json_encode([
+                'document_id' => (int)($d['document_id'] ?? 0),
       //  'lang'        => (string)($d['lang'] ?? ''),
-        'title'       => $this->oneLine($d['title'] ?? ''),
-        'preview'     => $this->oneLine($d['preview'] ?? ''),
-    ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+                'title'       => $this->oneLine($d['title'] ?? ''),
+                'preview'     => $this->oneLine($d['preview'] ?? ''),
+            ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        }
+
+        $catalogText = implode("\n", $lines);
+
+        $messages = [
+            ['role' => 'system', 'content' => $system],
+            ['role' => 'user', 'content' =>
+            "User query: {$userQuery}\n\nDOCUMENTS (one JSON per line):\n{$catalogText}"
+        ],
+    ];
+
+    $raw  = OpenAIClient::chat($messages);
+    $json = $this->extractJsonObject($raw);
+
+    $ids = $json['ids'] ?? [];
+    if (!is_array($ids)) $ids = [];
+
+    $ids = array_values(array_unique(array_filter($ids, fn($id) => is_numeric($id))));
+    $ids = array_map('intval', $ids);
+
+    return array_slice($ids, 0, $pick);
 }
 
-$catalogText = implode("\n", $lines);
-
-$messages = [
-    ['role' => 'system', 'content' => $system],
-    ['role' => 'user', 'content' =>
-        "User query: {$userQuery}\n\nDOCUMENTS (one JSON per line):\n{$catalogText}"
-    ],
-];
-
-$raw  = OpenAIClient::chat($messages);
-$json = $this->extractJsonObject($raw);
-
-        $ids = $json['ids'] ?? [];
-        if (!is_array($ids)) $ids = [];
-
-        $ids = array_values(array_unique(array_filter($ids, fn($id) => is_numeric($id))));
-        $ids = array_map('intval', $ids);
-
-        return array_slice($ids, 0, $pick);
-    }
-
-    /* ===================== LOAD FULL DOCS ===================== */
+/* ===================== LOAD FULL DOCS ===================== */
 
     /**
      * Загружаем полные переводы выбранных document_id.
@@ -184,8 +231,8 @@ $json = $this->extractJsonObject($raw);
         if (!$ids) return [];
 
         $q = DocumentTranslation::query()
-            ->whereIn('document_id', $ids)
-            ->select(['document_id', 'lang', 'title', 'content']);
+        ->whereIn('document_id', $ids)
+        ->select(['document_id', 'lang', 'title', 'content']);
 
         if ($preferredLang) {
             $q->where('lang', $preferredLang);
@@ -227,10 +274,10 @@ $json = $this->extractJsonObject($raw);
         foreach ($docsById as $docId => $translations) {
             foreach ($translations as $t) {
                 $block =
-                    "### Doc ID: {$t['document_id']}\n" .
-                    "Lang: {$t['lang']}\n" .
-                    "Title: {$t['title']}\n" .
-                    "Content:\n{$t['content']}\n";
+                "### Doc ID: {$t['document_id']}\n" .
+                "Lang: {$t['lang']}\n" .
+                "Title: {$t['title']}\n" .
+                "Content:\n{$t['content']}\n";
 
                 $len = mb_strlen($block);
                 if ($used + $len > $maxChars) {

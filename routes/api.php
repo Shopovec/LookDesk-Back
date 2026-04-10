@@ -58,10 +58,10 @@ Route::middleware(['auth:sanctum', 'update_last_seen'])->group(function () {
 
 
 Route::get('team-invitations/accept', [UserController::class, 'accept']);
-Route::get('users/{id}/download/pdf', [UserController::class, 'downloadPDF']);
-Route::get('users/{id}/download/xsl', [UserController::class, 'downloadXsl']);
-Route::get('documents/{id}/download/pdf', [DocumentController::class, 'downloadPDF']);
-Route::get('documents/{id}/download/xsl', [DocumentController::class, 'downloadXsl']);
+Route::get('users/download/pdf', [UserController::class, 'downloadPDF']);
+Route::get('users/download/xsl', [UserController::class, 'downloadXsl']);
+Route::get('documents/download/pdf', [DocumentController::class, 'downloadPDF']);
+Route::get('documents/download/xsl', [DocumentController::class, 'downloadXsl']);
 Route::middleware(['auth:sanctum', 'update_last_seen'])->group(function () {
 
     Route::prefix('support')->group(function () {

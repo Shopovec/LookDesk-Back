@@ -171,13 +171,13 @@ public function accept(Request $request)
         $user->save();
 
         Mail::raw("
-           You have been invited.
+         You have been invited.
 
-           Login: {$user->email}
-           Password: {$plainPassword}
+         Login: {$user->email}
+         Password: {$plainPassword}
 
-           Please login and change your password.
-           ", function ($message) use ($user) {
+         Please login and change your password.
+         ", function ($message) use ($user) {
             $message->to($user->email)
             ->subject('Your Account Credentials');
         });
@@ -476,19 +476,19 @@ public function index(Request $request)
 
 
         if ($me->hasRole('owner') || $me->hasRole('superadmin')) {
-         $query->where(function ($q) use ($me) {
+           $query->where(function ($q) use ($me) {
             $q->where('client_creator_id', $me->id)
               ->orWhere('id', $me->id); // ✅ добавить себя
           });
-     } else {
-         $query->where(function ($q) use ($me) {
+       } else {
+           $query->where(function ($q) use ($me) {
             $q->where('client_creator_id', $me->client_creator_id)
               ->orWhere('id', $me->client_creator_id); // ✅ добавить себя
           });
-     }
+       }
 
 
-     return $this->success($query->paginate(20)->getCollection()->transform(function ($user) {
+       return $this->success($query->paginate(20)->getCollection()->transform(function ($user) {
         $user->documents_count = (int) $user->documents_count;
         $user->sessions_chat_count = (int) $user->sessions_chat_count;
         $user->is_online = $user->last_seen_at
@@ -512,7 +512,7 @@ public function index(Request $request)
         }
         return $user;
     }));
- }
+   }
 
     /* ============================================================
      | GET USERS LIST
@@ -664,111 +664,97 @@ public function index(Request $request)
         return $this->success($query->paginate(20));
     }
 
-      /* ======================================================
-     | FILE DOWNLOAD
-     ====================================================== */
-    #[OA\Get(
-     path: "/api/users/{id}/download/xsl",
-     summary: "Download document file",
-     tags: ["Users"],
-     parameters: [
-        new OA\Parameter(name: "id", in: "path", schema: new OA\Schema(type: "integer")),
-    ],
-    security: [["sanctum" => []]],
-
-    responses: [
-        new OA\Response(response: 200, description: "File downloaded")
-    ]
-)]
-
-    public function downloadXsl($id)
-    {
-        if (!$user || $user->hasRole('user') || $user->hasRole('editor') || $user->hasRole('accountant')) {
-            abort(403, "Forbidden");
-        }
-        $user = User::withCount([
-            'documents as documents_count',
-            'sessions as sessions_chat_count',
-            'documentsTeam as documents_team_count',
-            'sessionsTeam as sessions_team_chat_count',
-            'clientUsers as client_users_count',
-        ])->with(
-            'role',
-            'functions',
-            'subscription.plan',
-            'subscription.plan.features',
-            'subscription.plan.prices',
-            'subscription.planPrice',
-            'payments'
-        )->findOrFail($id);
-
-        $user->is_online = $user->last_seen_at
-        ? strtotime($user->last_seen_at) > now()->subMinutes(5)->timestamp
-        : false;
-
-        if ($user->deleted_at) {
-            $user->status = 'inactive';
-        } elseif (!$user->is_verified) {
-            $user->status = 'pending';
-        } else {
-            $user->status = 'active';
-        }
-
-        if ($user->hasRole('owner')) {
-            $user->economist_30_last = $this->aiEconomics($user->id);
-            $user->active_users_last_30_days = $this->activeUsersLast30Days($user->id);
-            $user->deleted_users_last_30_days = $this->trashedUsersLast30Days($user->id);
-        }
-
-        $fileName = 'user_'.$user->id.'_report_'.now()->format('Ymd_His').'.xlsx';
-
-        return Excel::download(new \App\Exports\UsersExport([$user]), $fileName);
-    }
     /* ======================================================
-     | FILE DOWNLOAD
-     ====================================================== */
-    #[OA\Get(
-     path: "/api/users/{id}/download/pdf",
-     summary: "Download document file",
-     tags: ["Users"],
-     parameters: [
-        new OA\Parameter(name: "id", in: "path", schema: new OA\Schema(type: "integer")),
-        new OA\Parameter(name: "isView", in: "query", schema: new OA\Schema(type: "boolean"))
-    ],
-    security: [["sanctum" => []]],
-
-    responses: [
-        new OA\Response(response: 200, description: "File downloaded")
-    ]
+| FILE DOWNLOAD LIST XLSX BY IDS
+====================================================== */
+#[OA\Get(
+path: "/api/users/download/xsl",
+summary: "Download users list as XLSX by ids",
+tags: ["Users"],
+security: [["sanctum" => []]],
+parameters: [
+    new OA\Parameter(
+        name: "ids",
+        in: "query",
+        description: "User IDs",
+        required: true,
+        style: "form",
+        explode: true,
+        schema: new OA\Schema(
+            type: "array",
+            items: new OA\Items(type: "integer")
+        )
+    )
+],
+responses: [
+    new OA\Response(response: 200, description: "Users XLSX downloaded"),
+    new OA\Response(response: 422, description: "Validation error")
+]
 )]
+public function downloadXsl(Request $request)
+{
+    $request->validate([
+        'ids' => ['nullable', 'array'],
+        'ids.*' => ['integer', 'exists:users,id'],
+    ]);
 
-    public function downloadPDF($id, Request $request)
-    {
-        if (!$user || $user->hasRole('user') || $user->hasRole('editor') || $user->hasRole('accountant')) {
-            abort(403, "Forbidden");
-        }  
-        $user = User::withCount([
-            'documents as documents_count',
-            'sessions as sessions_chat_count',
-            'documentsTeam as documents_team_count',
-            'sessionsTeam as sessions_team_chat_count',
-            'clientUsers as client_users_count',
-        ])->with(
-            'role',
-            'functions',
-            'subscription.plan',
-            'subscription.plan.features',
-            'subscription.plan.prices',
-            'subscription.planPrice',
-            'payments'
-        )->findOrFail($id);
+    $currentUser = auth()->user();
 
-    // online
+    if (!$currentUser || $currentUser->hasRole('user') || $currentUser->hasRole('editor') || $currentUser->hasRole('accountant')) {
+        abort(403, "Forbidden");
+    }
+
+    $ids = array_map('intval', $request->get('ids', []));
+
+    if ($ids) {
+        \ $users = User::withCount([
+        'documents as documents_count',
+        'sessions as sessions_chat_count',
+        'documentsTeam as documents_team_count',
+        'sessionsTeam as sessions_team_chat_count',
+        'clientUsers as client_users_count',
+    ])
+    ->with(
+        'role',
+        'functions',
+        'subscription.plan',
+        'subscription.plan.features',
+        'subscription.plan.prices',
+        'subscription.planPrice',
+        'payments'
+    )
+    ->whereIn('id', $ids)
+    ->get()
+    ->sortBy(function ($user) use ($ids) {
+        return array_search($user->id, $ids);
+    })
+    ->values();
+    } else {
+         $users = User::withCount([
+        'documents as documents_count',
+        'sessions as sessions_chat_count',
+        'documentsTeam as documents_team_count',
+        'sessionsTeam as sessions_team_chat_count',
+        'clientUsers as client_users_count',
+    ])
+    ->with(
+        'role',
+        'functions',
+        'subscription.plan',
+        'subscription.plan.features',
+        'subscription.plan.prices',
+        'subscription.planPrice',
+        'payments'
+    )
+    ->get()
+    ->values();
+    }
+
+    $users->transform(function ($user) {
         $user->is_online = $user->last_seen_at
         ? strtotime($user->last_seen_at) > now()->subMinutes(5)->timestamp
         : false;
 
-    // status
         if ($user->deleted_at) {
             $user->status = 'inactive';
         } elseif (!$user->is_verified) {
@@ -777,9 +763,7 @@ public function index(Request $request)
             $user->status = 'active';
         }
 
-    // owner statistics
         if ($user->hasRole('owner')) {
-
             $user->documents_team_count = (int)$user->documents_team_count;
             $user->sessions_team_chat_count = (int)$user->sessions_team_chat_count;
             $user->client_users_count = (int)$user->client_users_count;
@@ -789,20 +773,148 @@ public function index(Request $request)
             $user->deleted_users_last_30_days = $this->trashedUsersLast30Days($user->id);
         }
 
-        $fileName = 'user_'.$user->id.'_report_'.now()->format('Ymd_His').'.pdf';
+        return $user;
+    });
 
-        $pdf = Pdf::loadView('pdf.user-report', [
-            'user' => $user
-        ])->setPaper('a4');
+    $fileName = 'users_report_' . now()->format('Ymd_His') . '.xlsx';
 
-        if ($request->boolean('isView')) {
-            return response($pdf->output(),200)
-            ->header('Content-Type','application/pdf')
-            ->header('Content-Disposition','inline; filename="'.$fileName.'"');
+    return Excel::download(new \App\Exports\UsersExport($users), $fileName);
+}
+
+/* ======================================================
+| FILE DOWNLOAD LIST PDF BY IDS
+====================================================== */
+#[OA\Get(
+path: "/api/users/download/pdf",
+summary: "Download users list as PDF by ids",
+tags: ["Users"],
+security: [["sanctum" => []]],
+parameters: [
+    new OA\Parameter(
+        name: "ids",
+        in: "query",
+        description: "User IDs",
+        required: true,
+        style: "form",
+        explode: true,
+        schema: new OA\Schema(
+            type: "array",
+            items: new OA\Items(type: "integer")
+        )
+    ),
+    new OA\Parameter(
+        name: "isView",
+        in: "query",
+        schema: new OA\Schema(type: "boolean")
+    )
+],
+responses: [
+    new OA\Response(response: 200, description: "Users PDF downloaded"),
+    new OA\Response(response: 422, description: "Validation error")
+]
+)]
+public function downloadListPDF(Request $request)
+{
+    $request->validate([
+        'ids' => ['nullable', 'array'],
+        'ids.*' => ['integer', 'exists:users,id'],
+        'isView' => ['nullable'],
+    ]);
+
+    $currentUser = auth()->user();
+
+    if (!$currentUser || $currentUser->hasRole('user') || $currentUser->hasRole('editor') || $currentUser->hasRole('accountant')) {
+        abort(403, "Forbidden");
+    }
+
+    $ids = array_map('intval', $request->get('ids', []));
+
+    if ($ids) {
+        \ $users = User::withCount([
+        'documents as documents_count',
+        'sessions as sessions_chat_count',
+        'documentsTeam as documents_team_count',
+        'sessionsTeam as sessions_team_chat_count',
+        'clientUsers as client_users_count',
+    ])
+    ->with(
+        'role',
+        'functions',
+        'subscription.plan',
+        'subscription.plan.features',
+        'subscription.plan.prices',
+        'subscription.planPrice',
+        'payments'
+    )
+    ->whereIn('id', $ids)
+    ->get()
+    ->sortBy(function ($user) use ($ids) {
+        return array_search($user->id, $ids);
+    })
+    ->values();
+    } else {
+         $users = User::withCount([
+        'documents as documents_count',
+        'sessions as sessions_chat_count',
+        'documentsTeam as documents_team_count',
+        'sessionsTeam as sessions_team_chat_count',
+        'clientUsers as client_users_count',
+    ])
+    ->with(
+        'role',
+        'functions',
+        'subscription.plan',
+        'subscription.plan.features',
+        'subscription.plan.prices',
+        'subscription.planPrice',
+        'payments'
+    )
+    ->get()
+    ->values();
+    }
+   
+
+    $users->transform(function ($user) {
+        $user->is_online = $user->last_seen_at
+        ? strtotime($user->last_seen_at) > now()->subMinutes(5)->timestamp
+        : false;
+
+        if ($user->deleted_at) {
+            $user->status = 'inactive';
+        } elseif (!$user->is_verified) {
+            $user->status = 'pending';
+        } else {
+            $user->status = 'active';
         }
 
-        return $pdf->download($fileName);
+        if ($user->hasRole('owner')) {
+            $user->documents_team_count = (int)$user->documents_team_count;
+            $user->sessions_team_chat_count = (int)$user->sessions_team_chat_count;
+            $user->client_users_count = (int)$user->client_users_count;
+
+            $user->economist_30_last = $this->aiEconomics($user->id);
+            $user->active_users_last_30_days = $this->activeUsersLast30Days($user->id);
+            $user->deleted_users_last_30_days = $this->trashedUsersLast30Days($user->id);
+        }
+
+        return $user;
+    });
+
+    $fileName = 'users_report_' . now()->format('Ymd_His') . '.pdf';
+
+    $pdf = Pdf::loadView('pdf.users-report-list', [
+        'users' => $users,
+        'authUser' => auth()->user(),
+    ])->setPaper('a4');
+
+    if ($request->boolean('isView')) {
+        return response($pdf->output(), 200)
+        ->header('Content-Type', 'application/pdf')
+        ->header('Content-Disposition', 'inline; filename="' . $fileName . '"');
     }
+
+    return $pdf->download($fileName);
+}
 
 
     /* ============================================================
@@ -865,17 +977,17 @@ public function index(Request $request)
         $user = User::where('email', $email)->first();
         if (!$user) return $this->error("Not found", 404);
         if ($user->client_creator_id) {
-           return $this->success(['message' => 'Yeap. User in team']); 
-       }
+         return $this->success(['message' => 'Yeap. User in team']); 
+     }
 
 
-       $c = User::where('client_creator_id',$user->client_creator_id)->count();
+     $c = User::where('client_creator_id',$user->client_creator_id)->count();
 
-       if ($c) {
-           return $this->success(['message' => 'Yeap. User is owner a team']); 
-       }
-       return $this->error(['message' => 'Not. User not in team']); 
-   }
+     if ($c) {
+         return $this->success(['message' => 'Yeap. User is owner a team']); 
+     }
+     return $this->error(['message' => 'Not. User not in team']); 
+ }
 
     /* ============================================================
      | CREATE USER (ADMIN ONLY)
@@ -916,7 +1028,7 @@ public function index(Request $request)
 )]
 public function store(Request $request)
 {
-   if (!$user || $user->hasRole('user') || $user->hasRole('editor') || $user->hasRole('accountant')) {
+ if (!$user || $user->hasRole('user') || $user->hasRole('editor') || $user->hasRole('accountant')) {
     abort(403, "Forbidden");
 }
 if (auth()->user()->hasRole('user') || auth()->user()->hasRole('client')) {
@@ -1048,7 +1160,7 @@ responses: [
    public function update(Request $request, $id)
    {
 
-       $request->validate([
+     $request->validate([
         'name' => 'nullable|string',
         'email' => 'nullable|email|unique:users,email',
         'role' => 'nullable|string|exists:roles,name',
@@ -1057,10 +1169,10 @@ responses: [
         'password' => 'nullable|string',
     ]);
 
-       $user = User::find($id);
-       if (!$user) return $this->error("Not found", 404);
+     $user = User::find($id);
+     if (!$user) return $this->error("Not found", 404);
 
-       if ($user->hasRole('admin') &&  in_array(strtolower($request->role),['owner', 'admin']) ) {
+     if ($user->hasRole('admin') &&  in_array(strtolower($request->role),['owner', 'admin']) ) {
         abort(403, "Forbidden");
     }
 

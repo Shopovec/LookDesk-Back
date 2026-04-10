@@ -11,6 +11,7 @@ return new class extends Migration {
             $table->id();
             $table->foreignId('user_id')->constrained()->cascadeOnDelete();
             $table->boolean('is_favorite')->default(false);
+            $table->string('title')->nullable();
             $table->foreignId('search_query_id')->constrained('search_queries')->cascadeOnDelete();
             $table->boolean('is_closed')->default(false);
             $table->timestamps();
