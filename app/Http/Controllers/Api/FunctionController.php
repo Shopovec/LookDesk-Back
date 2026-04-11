@@ -45,39 +45,29 @@ class FunctionController extends Controller
     public function index(Request $request)
     {
         $lang = $request->get('lang', 'en');
-
-        $query = FunctionZ::query()->with(['translations']);
-
         $me = auth()->user();
 
-        if ($me->hasRole('user') || $me->hasRole('client')) {
-
-        // если клиент — берем owner-а, иначе себя
-            $ownerId = $me->id;
-
-        // показать функции, привязанные к ownerId (через pivot user_function)
-            $query->whereHas('users', function ($q) use ($ownerId) {
-                $q->where('users.id', $ownerId);
-            });
-        }
-
-        if ($me->hasRole('owner') ) {
-
-        // если клиент — берем owner-а, иначе себя
-            $ownerId = $me->id;
-
-        // показать функции, привязанные к ownerId (через pivot user_function)
-            $query->whereHas('users', function ($q) use ($ownerId) {
-                $q->where('users.id', $ownerId);
-            });
-        }
-
-        $items = $query->get();
-
-        $items->transform(function ($cat) use ($lang) {
-            $cat->translated = $cat->getTranslation($lang);
-            return $cat;
-        });
+        $items = FunctionZ::query()
+        ->with([
+            'translations' => function ($q) use ($lang) {
+                $q->where('lang', $lang);
+            }
+        ])
+        ->when(
+            $me->hasRole('user') || $me->hasRole('client') || $me->hasRole('owner'),
+            function ($q) use ($me) {
+                $q->whereHas('users', function ($subQ) use ($me) {
+                    $subQ->where('users.id', $me->id);
+                });
+            }
+        )
+        ->get()
+        ->map(function ($function) {
+            $function->translated = $function->translations->first();
+            unset($function->translations);
+            return $function;
+        })
+        ->values();
 
         return $this->success($items);
     }
@@ -207,14 +197,14 @@ class FunctionController extends Controller
      summary: "Update Function",
      tags: ["functions"],
      security: [["sanctum" => []]],
-    parameters: [
+     parameters: [
         new OA\Parameter(
             name: "id",
             in: "path",
             schema: new OA\Schema(type: "integer")
         )
     ],
-     requestBody: new OA\RequestBody(
+    requestBody: new OA\RequestBody(
         content: new OA\JsonContent(
             properties: [
                 new OA\Property(property: "translations", type: "array", items:
@@ -229,7 +219,7 @@ class FunctionController extends Controller
             ]
         )
     ),
-     responses: [
+    responses: [
         new OA\Response(response: 200, description: "Updated")
     ]
 )]
@@ -266,16 +256,16 @@ class FunctionController extends Controller
     #[OA\Delete(
      path: "/api/functions/{id}",
      summary: "Delete Function",
-         parameters: [
+     parameters: [
         new OA\Parameter(
             name: "id",
             in: "path",
             schema: new OA\Schema(type: "integer")
         )
     ],
-     tags: ["functions"],
-     security: [["sanctum" => []]],
-     responses: [
+    tags: ["functions"],
+    security: [["sanctum" => []]],
+    responses: [
         new OA\Response(response: 200, description: "Deleted")
     ]
 )]

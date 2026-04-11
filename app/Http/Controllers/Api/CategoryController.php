@@ -27,32 +27,49 @@ class CategoryController extends Controller
      |  returns nested structure
      ------------------------------------------------------------- */
     #[OA\Get(
-        path: "/api/categories",
-        summary: "Get all categories (with translations)",
-        tags: ["Categories"],
-        security: [["sanctum" => []]],
-        parameters: [
-            new OA\Parameter(
-                name: "lang",
-                in: "query",
-                schema: new OA\Schema(type: "string")
-            )
-        ],
-        responses: [
-            new OA\Response(response: 200, description: "Categories list")
-        ]
-    )]
+     path: "/api/categories",
+     summary: "Get all categories (with translations)",
+     tags: ["Categories"],
+     security: [["sanctum" => []]],
+     parameters: [
+        new OA\Parameter(
+            name: "lang",
+            in: "query",
+            schema: new OA\Schema(type: "string")
+        )
+    ],
+    responses: [
+        new OA\Response(response: 200, description: "Categories list")
+    ]
+)]
     public function index(Request $request)
     {
         $lang = $request->get('lang', 'en');
 
-        $query = Category::query()->with(['translations']);
+        $items = Category::query()
+        ->with([
+            'translations' => function ($q) use ($lang) {
+                $q->where('lang', $lang)
+                ->select('id', 'category_id', 'lang', 'title');
+            }
+        ])
+        ->withCount('documents')
+        ->get();
 
-        $items = $query->get();
+        $items->transform(function ($cat) {
+            $translation = $cat->translations->first();
 
-        $items->transform(function ($cat) use ($lang) {
-            $cat->translated = $cat->getTranslation($lang);
-            $cat->documents_count = $cat->documents->count();
+            $cat->translated = $translation ? [
+                'id'    => $translation->id,
+                'lang'  => $translation->lang,
+                'title' => $translation->title,
+                'content' => $translation->content,
+                'summary' => $translation->summary,
+                'file'  => $translation->file,
+            ] : null;
+
+            unset($cat->translations);
+
             return $cat;
         });
 
@@ -63,32 +80,32 @@ class CategoryController extends Controller
      | CREATE CATEGORY
      ------------------------------------------------------------- */
     #[OA\Post(
-        path: "/api/categories",
-        summary: "Create new category",
-        tags: ["Categories"],
-        security: [["sanctum" => []]],
-        requestBody: new OA\RequestBody(
-            required: true,
-            content: new OA\JsonContent(
-                properties: [
-                    new OA\Property(property: "translations", type: "array", items:
-                        new OA\Items(
-                            properties: [
-                                new OA\Property(property: "lang", type: "string"),
-                                new OA\Property(property: "title", type: "string"),
-                                new OA\Property(property: "description", type: "string", nullable: true),
-                            ],
-                            required: ["lang", "title"]
-                        )
+     path: "/api/categories",
+     summary: "Create new category",
+     tags: ["Categories"],
+     security: [["sanctum" => []]],
+     requestBody: new OA\RequestBody(
+        required: true,
+        content: new OA\JsonContent(
+            properties: [
+                new OA\Property(property: "translations", type: "array", items:
+                    new OA\Items(
+                        properties: [
+                            new OA\Property(property: "lang", type: "string"),
+                            new OA\Property(property: "title", type: "string"),
+                            new OA\Property(property: "description", type: "string", nullable: true),
+                        ],
+                        required: ["lang", "title"]
                     )
-                ],
-                required: ["translations"]
-            )
-        ),
-        responses: [
-            new OA\Response(response: 201, description: "Created")
-        ]
-    )]
+                )
+            ],
+            required: ["translations"]
+        )
+    ),
+     responses: [
+        new OA\Response(response: 201, description: "Created")
+    ]
+)]
     public function store(Request $request)
     {
         $user = auth()->user();
@@ -130,27 +147,27 @@ class CategoryController extends Controller
      | SHOW CATEGORY
      ------------------------------------------------------------- */
     #[OA\Get(
-        path: "/api/categories/{id}",
-        summary: "Get category by ID",
-        tags: ["Categories"],
-        security: [["sanctum" => []]],
-        parameters: [
-            new OA\Parameter(
-                name: "id",
-                in: "path",
-                schema: new OA\Schema(type: "integer")
-            ),
-            new OA\Parameter(
-                name: "lang",
-                in: "query",
-                schema: new OA\Schema(type: "string")
-            )
-        ],
-        responses: [
-            new OA\Response(response: 200, description: "Category found"),
-            new OA\Response(response: 404, description: "Not found")
-        ]
-    )]
+     path: "/api/categories/{id}",
+     summary: "Get category by ID",
+     tags: ["Categories"],
+     security: [["sanctum" => []]],
+     parameters: [
+        new OA\Parameter(
+            name: "id",
+            in: "path",
+            schema: new OA\Schema(type: "integer")
+        ),
+        new OA\Parameter(
+            name: "lang",
+            in: "query",
+            schema: new OA\Schema(type: "string")
+        )
+    ],
+    responses: [
+        new OA\Response(response: 200, description: "Category found"),
+        new OA\Response(response: 404, description: "Not found")
+    ]
+)]
     public function show($id, Request $request)
     {
         $lang = $request->get('lang', 'en');
@@ -167,29 +184,29 @@ class CategoryController extends Controller
      | UPDATE CATEGORY
      ------------------------------------------------------------- */
     #[OA\Put(
-        path: "/api/categories/{id}",
-        summary: "Update category",
-        tags: ["Categories"],
-        security: [["sanctum" => []]],
-        requestBody: new OA\RequestBody(
-            content: new OA\JsonContent(
-                properties: [
-                    new OA\Property(property: "translations", type: "array", items:
-                        new OA\Items(
-                            properties: [
-                                new OA\Property(property: "lang", type: "string"),
-                                new OA\Property(property: "title", type: "string"),
-                                new OA\Property(property: "description", type: "string", nullable: true)
-                            ]
-                        )
+     path: "/api/categories/{id}",
+     summary: "Update category",
+     tags: ["Categories"],
+     security: [["sanctum" => []]],
+     requestBody: new OA\RequestBody(
+        content: new OA\JsonContent(
+            properties: [
+                new OA\Property(property: "translations", type: "array", items:
+                    new OA\Items(
+                        properties: [
+                            new OA\Property(property: "lang", type: "string"),
+                            new OA\Property(property: "title", type: "string"),
+                            new OA\Property(property: "description", type: "string", nullable: true)
+                        ]
                     )
-                ]
-            )
-        ),
-        responses: [
-            new OA\Response(response: 200, description: "Updated")
-        ]
-    )]
+                )
+            ]
+        )
+    ),
+     responses: [
+        new OA\Response(response: 200, description: "Updated")
+    ]
+)]
     public function update($id, Request $request)
     {
         $category = Category::find($id);
@@ -200,39 +217,39 @@ class CategoryController extends Controller
 
         if (!$category) return $this->error("Not found", 404);
         if ($category->is_system) {
-             abort(403, "Forbidden");
-        }
+           abort(403, "Forbidden");
+       }
 
-        if ($request->translations) {
-            foreach ($request->translations as $t) {
-                CategoryTranslation::updateOrCreate(
-                    [
-                        'category_id' => $category->id,
-                        'lang' => $t['lang']
-                    ],
-                    [
-                        'title' => $t['title'],
-                        'description' => $t['description'] ?? null
-                    ]
-                );
-            }
+       if ($request->translations) {
+        foreach ($request->translations as $t) {
+            CategoryTranslation::updateOrCreate(
+                [
+                    'category_id' => $category->id,
+                    'lang' => $t['lang']
+                ],
+                [
+                    'title' => $t['title'],
+                    'description' => $t['description'] ?? null
+                ]
+            );
         }
-
-        return $this->success($category->load('translations'), "Updated");
     }
+
+    return $this->success($category->load('translations'), "Updated");
+}
 
     /* -------------------------------------------------------------
      | DELETE CATEGORY
      ------------------------------------------------------------- */
     #[OA\Delete(
-        path: "/api/categories/{id}",
-        summary: "Delete category",
-        tags: ["Categories"],
-        security: [["sanctum" => []]],
-        responses: [
-            new OA\Response(response: 200, description: "Deleted")
-        ]
-    )]
+     path: "/api/categories/{id}",
+     summary: "Delete category",
+     tags: ["Categories"],
+     security: [["sanctum" => []]],
+     responses: [
+        new OA\Response(response: 200, description: "Deleted")
+    ]
+)]
     public function destroy($id)
     {
         $this->checkOwnerAdmin();
@@ -244,28 +261,28 @@ class CategoryController extends Controller
 
         if (!$category) return $this->error("Not found", 404);
         if ($category->is_system) {
-             abort(403, "Forbidden");
-        }
+           abort(403, "Forbidden");
+       }
 
-        Event::create([
-            'user_id' => auth()->user()->id,
-            'action'  => 'deleted',
-            'model' => 'category',
-            'model_id' => $category->id,
-            'deleted_title' => $category->translations()[0]->title
-        ]);
+       Event::create([
+        'user_id' => auth()->user()->id,
+        'action'  => 'deleted',
+        'model' => 'category',
+        'model_id' => $category->id,
+        'deleted_title' => $category->translations()[0]->title
+    ]);
 
-        $category->translations()->delete();
-        $category->delete();
+       $category->translations()->delete();
+       $category->delete();
 
-        return $this->success(null, "Deleted");
-    }
+       return $this->success(null, "Deleted");
+   }
 
     /* -------------------------------------------------------------
      | OWNER / ADMIN VALIDATION
      ------------------------------------------------------------- */
-    private function checkOwnerAdmin()
-    {
+     private function checkOwnerAdmin()
+     {
         $user = auth()->user();
         if (!$user || !in_array($user->role_id, [1, 2])) {
             abort(403, "Forbidden");

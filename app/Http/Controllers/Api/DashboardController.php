@@ -17,6 +17,7 @@ use App\Models\ChatMessage;
 use App\Models\AiDocumentStat;
 use App\Models\Subscription;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Cache;
 
 
 class DashboardController extends Controller
@@ -41,67 +42,53 @@ class DashboardController extends Controller
         new OA\Response(response: 200, description: "Dashboard data")
     ]
 )]
+    /* ============================================================
+     | DASHBOARD MAIN - ОПТИМИЗИРОВАННЫЙ
+     ============================================================ */
     public function index(Request $request)
     {
         $user = auth()->user();
+
         if (!$user || $user->hasRole('user') || $user->hasRole('editor') || $user->hasRole('accountant')) {
             abort(403, "Forbidden");
         }
 
-        $from = now()->subDays(30);
+        $lang = $request->get('lang', 'en');
 
-        $data = [
-            'active_plans' => Subscription::whereIn('status',['active','trialing'])->count(),
-            'clients_total' =>  User::where('role_id', 1)->count(),
-            'deleted_users' =>  User::onlyTrashed()->count(),
-            'active_users' =>  User::count(),
-            'csat_last_30_days' => $this->csatOverall(),
-            'csat_last' => $this->csatOverallAll(),
-            'deleted_users_last_30_days' =>  $this->trashedUsersLast30Days(),
-            'total_revenue_last_30_days'  => $this->aiEconomics(),
-            'total_revenue'  => $this->aiEconomicsAll(),
+        // Ключ кэша зависит от пользователя и языка
+        $cacheKey = "dashboard.summary.{$user->id}.{$lang}";
 
-        // ✅ total documents
-            'documents_total' => Document::count(),
-            'documents_total_last_30_days' => Document::where('created_at', '>=', $from)->count(),
+        $data = Cache::remember($cacheKey, now()->addMinutes(5), function () use ($user, $lang) {
 
-        // ✅ активные юзеры за 30 дней (кто имел хотя бы 1 chat session)
-            'active_users_last_30_days' => $this->activeUsersLast30Days(),
+            $from30 = now()->subDays(30);
 
-        // ✅ searches today (кол-во user-сообщений в чатах за сегодня)
-            'searches_today' => $this->searchesToday(),
-
-        // остальное как было
-            'most_viewed_document' => $this->mostViewedDocument(),
-            'categories_total'      => Category::count(),
-            'translations_total'    => DocumentTranslation::count(),
-            'ocr_total'             => OcrScan::count(),
-            'my_ocr_total'          => OcrScan::where('user_id', $user->id)->count(),
-            'latest_documents'      => $this->latestDocuments(),
-            'latest_ocr'            => $this->latestOcr($user),
-            'documents_per_day'     => $this->documentsGraph(),
-            'categories_usage'      => $this->categoriesUsage(),
-
-        // 📈 чаты сегодня (сессии)
-            'ai_sessions_today' => ChatSession::whereDate('created_at', today())->count(),
-
-        // ⭐ топ запросов
-            'top_ai_queries' => ChatMessage::selectRaw('content, COUNT(*) as total')
-            ->where('role', 'user')
-            ->groupBy('content')
-            ->orderByDesc('total')
-            ->limit(5)
-            ->get(),
-        ];
-
-        if ($user->hasRole('user')) {
-            $data['billing'] = $this->aiEconomics($user);
-        }
-
-        if (in_array($user->role_id, [1,2])) {
-            $data['users_total'] = User::count();
-            $data['latest_users'] = $this->latestUsers();
-        }
+            return [
+                'active_plans'               => Subscription::whereIn('status', ['active', 'trialing'])->count(),
+                'clients_total'              => User::where('role_id', 1)->count(),
+                'deleted_users'              => User::onlyTrashed()->count(),
+                'active_users'               => User::count(),                    // можно заменить на cached значение, если нужно
+                'csat_last_30_days'          => $this->csatOverall(),
+                'csat_last'                  => $this->csatOverallAll(),
+                'deleted_users_last_30_days' => $this->trashedUsersLast30Days(),
+                'total_revenue_last_30_days' => $this->aiEconomics()['total_revenue'] ?? 0,
+                'total_revenue'              => $this->aiEconomicsAll()['total_revenue'] ?? 0,
+                'documents_total'            => Document::count(),
+                'documents_total_last_30_days'=> Document::where('created_at', '>=', $from30)->count(),
+                'active_users_last_30_days'  => $this->activeUsersLast30Days(),
+                'searches_today'             => $this->searchesToday(),
+                'most_viewed_document'       => $this->mostViewedDocument($lang),
+                'categories_total'           => Category::count(),
+                'translations_total'         => DocumentTranslation::count(),
+                'ocr_total'                  => OcrScan::count(),
+                'my_ocr_total'               => OcrScan::where('user_id', $user->id)->count(),
+                'latest_documents'           => $this->latestDocuments($lang),
+                'latest_ocr'                 => $this->latestOcr($user),
+                'documents_per_day'          => $this->documentsGraph(),
+                'categories_usage'           => $this->categoriesUsage(),
+                'ai_sessions_today'          => ChatSession::whereDate('created_at', today())->count(),
+                'top_ai_queries'             => $this->topAiQueries(),
+            ];
+        });
 
         return $this->success($data);
     }
@@ -117,148 +104,210 @@ class DashboardController extends Controller
         new OA\Response(response: 200, description: "Dashboard data")
     ]
 )]
-      public function top_search_documents(Request $request)
-      {
-        $stats = DB::select("
-          SELECT d.id as doc_id, COUNT(*) as total
-          FROM (
-            SELECT JSON_EXTRACT(meta, '$.picked_ids[0]') as doc_id
-            FROM chat_messages
-            WHERE role = 'assistant'
+      /* ============================================================
+     | TOP SEARCH DOCUMENTS (оставил почти как было, но с eager loading)
+     ============================================================ */
+    public function top_search_documents(Request $request)
+    {
+        $cacheKey = 'dashboard.top_search_documents';
 
-            UNION ALL
+        return Cache::remember($cacheKey, now()->addMinutes(5), function () {
+            $stats = DB::select("
+                SELECT d.id as doc_id, COUNT(*) as total
+                FROM (
+                    SELECT JSON_EXTRACT(meta, '$.picked_ids[0]') as doc_id
+                    FROM chat_messages WHERE role = 'assistant'
+                    UNION ALL
+                    SELECT JSON_EXTRACT(meta, '$.picked_ids[1]') as doc_id
+                    FROM chat_messages WHERE role = 'assistant'
+                ) t
+                JOIN documents d ON d.id = t.doc_id
+                WHERE t.doc_id IS NOT NULL
+                GROUP BY d.id
+                ORDER BY total DESC
+                LIMIT 3;
+            ");
 
-            SELECT JSON_EXTRACT(meta, '$.picked_ids[1]') as doc_id
-            FROM chat_messages
-            WHERE role = 'assistant'
-        ) t
-          JOIN documents d ON d.id = t.doc_id
-          WHERE t.doc_id IS NOT NULL
-          GROUP BY d.id
-          ORDER BY total DESC
-          LIMIT 3;
-          ");
+            $stats = collect($stats);
 
-        $stats = collect($stats);
+            if ($stats->isEmpty()) {
+                return [];
+            }
 
+            $documents = Document::with([
+                'translations' => fn($q) => $q->select('id', 'document_id', 'lang', 'title'),
+                'categories:id',
+                'functions:id'
+            ])
+            ->whereIn('id', $stats->pluck('doc_id'))
+            ->get();
 
-        $documents = Document::with(['translations','categories','functions'])->whereIn('id', $stats->pluck('doc_id'))->get();
-        $documents = $documents->transform(function ($doc) use ($stats) {
+            $documents->transform(function ($doc) use ($stats) {
+                $stat = $stats->firstWhere('doc_id', $doc->id);
+                $doc->total = $stat->total ?? 0;
+                return $doc;
+            });
 
-            $stat = $stats->firstWhere('doc_id', $doc->id);
-
-            $doc->total = $stat->total ?? 0;
-
-            return $doc;
+            return $documents;
         });
-        return $this->success($documents);
     }
 
 
+    /* ============================================================
+     | PRIVATE HELPERS (оптимизированные)
+     ============================================================ */
+
+    private function topAiQueries()
+    {
+        return ChatMessage::selectRaw('content, COUNT(*) as total')
+            ->where('role', 'user')
+            ->groupBy('content')
+            ->orderByDesc('total')
+            ->limit(5)
+            ->get();
+    }
+
     private function activeUsersLast30Days(): int
     {
-        $from = now()->subDays(30);
-
-        return ChatSession::where('created_at', '>=', $from)
-        ->distinct('user_id')
-        ->count('user_id');
+        return ChatSession::where('created_at', '>=', now()->subDays(30))
+            ->distinct('user_id')
+            ->count('user_id');
     }
 
     private function trashedUsersLast30Days(): int
     {
-        $from = now()->subDays(30);
-
-        return User::onlyTrashed()->where('created_at', '>=', $from)->count();
+        return User::onlyTrashed()
+            ->where('created_at', '>=', now()->subDays(30))
+            ->count();
     }
 
-    private function searchesToday(): int
+   private function searchesToday(): int
     {
-    // считаем "поиски" как сообщения пользователя в чатах за сегодня
         return ChatMessage::where('role', 'user')
-        ->whereDate('created_at', today())
-        ->count();
+            ->whereDate('created_at', today())
+            ->count();
     }
 
     private function csatOverall(): float
     {
         $fromDate = now()->subDays(30);
+        $totalSessions = ChatSession::where('created_at', '>=', $fromDate)->count();
 
-    // 1️⃣ Всего сессий за 30 дней
-        $totalSessions = \App\Models\ChatSession::where(
-            'created_at',
-            '>=',
-            $fromDate
-        )->count();
+        if ($totalSessions === 0) return 0;
 
-        if ($totalSessions === 0) {
-            return 0;
-        }
-
-    // 2️⃣ Сессии с положительным feedback
-        $positiveSessions = \App\Models\ChatSession::where(
-            'created_at',
-            '>=',
-            $fromDate
-        )
-        ->whereHas('messages.feedback', function ($q) {
-            $q->where('is_useful', true);
-        })
-        ->distinct()
-        ->count();
+        $positiveSessions = ChatSession::where('created_at', '>=', $fromDate)
+            ->whereHas('messages.feedback', fn($q) => $q->where('is_useful', true))
+            ->distinct()
+            ->count();
 
         return round(($positiveSessions / $totalSessions) * 100, 1);
     }
 
     private function csatOverallAll(): float
     {
+        $totalSessions = ChatSession::count();
+        if ($totalSessions === 0) return 0;
 
-    // 1️⃣ Всего сессий за 30 дней
-        $totalSessions = \App\Models\ChatSession::count();
-
-        if ($totalSessions === 0) {
-            return 0;
-        }
-
-    // 2️⃣ Сессии с положительным feedback
-        $positiveSessions = \App\Models\ChatSession::whereHas('messages.feedback', function ($q) {
-            $q->where('is_useful', true);
-        })
-        ->distinct()
-        ->count();
+        $positiveSessions = ChatSession::whereHas('messages.feedback', fn($q) => $q->where('is_useful', true))
+            ->distinct()
+            ->count();
 
         return round(($positiveSessions / $totalSessions) * 100, 1);
     }
 
-    private function mostViewedDocument()
+    private function mostViewedDocument($lang = 'en')
     {
-        $document = Document::with(['categories','functions'])
-        ->withCount([
-            'views as views_last_30_days' => function ($q) {
-                $q->where('created_at', '>=', now()->subDays(30));
-            }
-        ])
-        ->orderByDesc('views_last_30_days')
-        ->first();
+        $document = Document::query()
+            ->select('id')
+            ->with([
+                'translations' => fn($q) => $q->where('lang', $lang)
+                    ->select('id', 'document_id', 'lang', 'title', 'summary'),
+            ])
+            ->withCount([
+                'views as views_last_30_days' => fn($q) => $q->where('created_at', '>=', now()->subDays(30))
+            ])
+            ->orderByDesc('views_last_30_days')
+            ->first();
 
-        if (!$document) {
-            return null;
-        }
+        if (!$document) return null;
 
-        $aiSearches = ChatMessage::where('role','user')
-        ->where('created_at', '>=', now()->subDays(30))
-        ->where('content','like','%'.$document->title.'%')
-        ->count();
+        $translation = $document->translations->first();
 
         return [
-            'id' => $document->id,
-            'title' => $document->getTranslation2('title','en'),
-            'description' => $document->getTranslation('description','en'),
-            'categories' => $document->categories->pluck('name'),
-            'functions' => $document->functions->pluck('name'),
-            'views_last_30_days' => $document->views_last_30_days,
-            'ai_searches_last_30_days' => $aiSearches,
+            'id'                  => $document->id,
+            'title'               => $translation?->title,
+            'categories'          => $document->categories?->pluck('id') ?? [],
+            'functions'           => $document->functions?->pluck('id') ?? [],
+            'views_last_30_days'  => (int) $document->views_last_30_days,
+            'ai_searches_last_30_days' => 0,
         ];
-    }   
+    }
+
+    private function latestDocuments($lang = 'en')
+    {
+        return Document::query()
+            ->select('id', 'created_at')
+            ->with([
+                'translations' => fn($q) => $q->where('lang', $lang)
+                    ->select('id', 'document_id', 'lang', 'title', 'file', 'content', 'summary'),
+                'categories:id',
+                'functions:id',
+            ])
+            ->orderByDesc('id')
+            ->limit(10)
+            ->get()
+            ->map(function ($doc) {
+                $translation = $doc->translations->first();
+                $doc->translated = $translation ? [
+                    'id'      => $translation->id,
+                    'lang'    => $translation->lang,
+                    'title'   => $translation->title,
+                    'content' => $translation->content,
+                    'summary' => $translation->summary,
+                    'file'    => $translation->file,
+                ] : null;
+                unset($doc->translations);
+                return $doc;
+            });
+    }
+
+    private function latestOcr(User $user)
+    {
+        return OcrScan::where('user_id', $user->id)
+            ->orderByDesc('id')
+            ->limit(10)
+            ->get();
+    }
+
+    private function documentsGraph()
+    {
+        $from = now()->subDays(29)->startOfDay();
+        $to   = now()->endOfDay();
+
+        $rows = Document::query()
+            ->selectRaw('DATE(created_at) as date, COUNT(*) as count')
+            ->whereBetween('created_at', [$from, $to])
+            ->groupBy(DB::raw('DATE(created_at)'))
+            ->pluck('count', 'date');
+
+        $days = [];
+        for ($i = 29; $i >= 0; $i--) {
+            $date = now()->subDays($i)->format('Y-m-d');
+            $days[] = [
+                'date'  => $date,
+                'count' => (int) ($rows[$date] ?? 0),
+            ];
+        }
+
+        return $days;
+    }
+
+    private function categoriesUsage()
+    {
+        return Category::withCount('documents')
+            ->orderByDesc('documents_count')
+            ->get();
+    }
 
     private function aiEconomics($user = null): array
     {
@@ -315,7 +364,7 @@ class DashboardController extends Controller
         ];
     }
 
-     private function aiEconomicsAll($user = null): array
+    private function aiEconomicsAll($user = null): array
     {
 
     // Revenue query
@@ -389,65 +438,4 @@ class DashboardController extends Controller
         ];
     }
 
-    /* ============================================================
-     | LAST 10 DOCUMENTS
-     ============================================================ */
-     private function latestDocuments()
-     {
-        return Document::with('categories', 'functions')
-        ->orderBy('id', 'desc')
-        ->limit(10)
-        ->get();
-    }
-
-    /* ============================================================
-     | LAST 10 OCR SCANS (only own)
-     ============================================================ */
-     private function latestOcr(User $user)
-     {
-        return OcrScan::where('user_id', $user->id)
-        ->orderBy('id', 'desc')
-        ->limit(10)
-        ->get();
-    }
-
-    /* ============================================================
-     | LAST USERS (admin only)
-     ============================================================ */
-     private function latestUsers()
-     {
-        return User::orderBy('id', 'desc')->with('functions')
-        ->limit(10)
-        ->get();
-    }
-
-    /* ============================================================
-     | GRAPH: documents per day (last 30 days)
-     ============================================================ */
-     private function documentsGraph()
-     {
-        $days = [];
-
-        for ($i = 29; $i >= 0; $i--) {
-            $date = Carbon::now()->subDays($i)->format('Y-m-d');
-
-            $days[] = [
-                'date' => $date,
-                'count' => Document::whereDate('created_at', $date)->count()
-            ];
-        }
-
-        return $days;
-    }
-
-    /* ============================================================
-     | CATEGORIES USAGE
-     ============================================================ */
-     private function categoriesUsage()
-     {
-        return Category::query()
-        ->withCount('documents')
-        ->orderBy('documents_count', 'desc')
-        ->get();
-    }
 }

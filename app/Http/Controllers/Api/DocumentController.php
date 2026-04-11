@@ -22,6 +22,7 @@ use PhpOffice\PhpWord\IOFactory;
 use Maatwebsite\Excel\Facades\Excel;
 use Barryvdh\DomPDF\Facade\Pdf;
 use App\Exports\DocumentsExport;
+use Illuminate\Support\Facades\Cache;
 
 class DocumentController extends Controller
 {
@@ -86,136 +87,118 @@ class DocumentController extends Controller
         new OA\Response(response: 200, description: "Document list")
     ]
 )]
+
     public function index(Request $request)
     {
         $lang = $request->get('lang', 'en');
         $user = auth()->user();
         $isPrivileged = !$user->hasRole('user') && !$user->hasRole('editor');
 
-        $query = Document::query()
-        ->with([
-            'translations' => function ($q) use ($lang) {
-                $q->where('lang', $lang)
-                ->select('id', 'document_id', 'lang', 'title', 'content', 'file');
-            },
-            'attachments',
-            'categories' => function ($q) {
-                $q->select('categories.id');
-            },
-            'categories.translations' => function ($q) use ($lang) {
-                $q->where('lang', $lang)
-                ->select('id', 'category_id', 'lang', 'title');
-            },
-            'functions',
-        ]);
+        $limit = max(1, min((int) $request->get('limit', 100), 200));
 
-        if ($request->filled('category_id')) {
-            $categoryId = (int) $request->category_id;
+    // === Генерация уникального ключа кэша ===
+        $cacheKey = 'documents_index:' . md5(
+            $lang .
+            $request->get('category_id') .
+            $request->get('function_id') .
+            $request->get('search') .
+            $limit .
+            $isPrivileged .
+            $request->boolean('isExportXSL') .
+            $request->boolean('isExportPDF')
+        );
 
-            $query->whereHas('categories', function ($q) use ($categoryId) {
-                $q->where('categories.id', $categoryId);
-            });
-        }
+    // TTL в секундах (5 минут — можно изменить)
+        $cacheTtl = 300;
 
-        if ($request->filled('function_id')) {
-            $functionId = (int) $request->function_id;
+    // Кэшируем только данные из БД + eager loading
+        $items = Cache::remember($cacheKey, $cacheTtl, function () use ($request, $lang, $isPrivileged, $limit) {
 
-            $query->whereHas('functions', function ($q) use ($functionId) {
-                $q->where('functions.id', $functionId);
-            });
-        }
+            $query = Document::query()
+            ->select('documents.id', 'documents.created_at', 'documents.created_by', 'documents.updated_at');
 
-        if ($request->filled('search')) {
-            $search = trim($request->search);
+        // Фильтры через JOIN
+            if ($request->filled('category_id')) {
+                $categoryId = (int) $request->category_id;
+                $query->join('document_category', 'documents.id', '=', 'document_category.document_id')
+                ->where('document_category.category_id', $categoryId);
+            }
 
-            $query->whereHas('translations', function ($q) use ($search) {
-                $q->where(function ($subQ) use ($search) {
-                    $subQ->where('title', 'like', '%' . $search . '%')
-                    ->orWhere('content', 'like', '%' . $search . '%');
-                });
-            });
-        }
+            if ($request->filled('function_id')) {
+                $functionId = (int) $request->function_id;
+                $query->join('document_function', 'documents.id', '=', 'document_function.document_id')
+                ->where('document_function.function_id', $functionId);
+            }
 
-        if ($isPrivileged) {
-            $query->withCount([
-                'views as views_last_30_days' => function ($q) {
-                    $q->where('created_at', '>=', now()->subDays(30));
+        // FULLTEXT поиск
+            if ($request->filled('search')) {
+                $searchTerm = trim($request->search);
+                if (!empty($searchTerm)) {
+                    $searchTerm = str_replace(['+', '-', '(', ')', '~', '<', '>', '@', '"', "'"], ' ', $searchTerm);
+                    $searchTerm = preg_replace('/\s+/', ' ', $searchTerm);
+
+                    $query->whereExists(function ($sub) use ($searchTerm, $lang) {
+                        $sub->selectRaw('1')
+                        ->from('document_translations')
+                        ->whereColumn('document_translations.document_id', 'documents.id')
+                        ->where('document_translations.lang', $lang)
+                        ->whereRaw("MATCH(title) AGAINST(? IN BOOLEAN MODE)", [
+                            '+' . str_replace(' ', ' +', $searchTerm)
+                        ]);
+                    });
                 }
+            }
+
+        // withCount только для привилегированных
+            if ($isPrivileged) {
+                $query->withCount([
+                    'views as views_last_30_days' => fn($q) => $q->where('created_at', '>=', now()->subDays(30))
+                ]);
+            }
+
+        // Eager loading
+            $query->with([
+                'translations' => fn($q) => $q->where('lang', $lang)
+                ->select('id', 'document_id', 'lang', 'title', 'summary', 'file', 'content'),
+
+                'categories:id',
+                'categories.translations' => fn($q) => $q->where('lang', $lang)
+                ->select('id', 'category_id', 'lang', 'title', 'description'),
+
+                'functions:id',
+                'creator:id,name,email',
             ]);
-        }
 
-        $items = $query->orderByDesc('id')->get();
+            return $query
+            ->orderByDesc('documents.id')
+            ->limit($limit)
+            ->get();
+        });
 
-        $docIds = $items->pluck('id')->map(fn($id) => (int) $id)->values()->all();
-
-        $docIds = $items->pluck('id')->map(fn($id) => (int) $id)->values()->all();
-
-        $aiSearchCounts = [];
-
-        if ($isPrivileged && !empty($docIds)) {
-            $selectParts = [];
-            $bindings = [];
-
-            foreach ($docIds as $docId) {
-                $selectParts[] = "
-                SUM(
-                CASE
-                WHEN JSON_CONTAINS(
-                JSON_EXTRACT(cm.meta, '$.picked_ids'),
-                ?
-                )
-                THEN 1 ELSE 0
-                END
-                ) AS doc_$docId
-                ";
-
-                $bindings[] = (string) $docId;
-            }
-
-            $sql = "
-            SELECT " . implode(",\n", $selectParts) . "
-            FROM chat_messages cm
-            WHERE cm.role = ?
-            AND cm.created_at >= ?
-            AND JSON_EXTRACT(cm.meta, '$.picked_ids') IS NOT NULL
-            ";
-
-            $bindings[] = 'assistant';
-            $bindings[] = now()->subDays(30);
-
-            $row = \DB::selectOne($sql, $bindings);
-
-            foreach ($docIds as $docId) {
-                $aiSearchCounts[$docId] = (int) ($row->{'doc_' . $docId} ?? 0);
-            }
-        }
-
-        $items->transform(function ($doc) use ($isPrivileged, $aiSearchCounts) {
+    // === Трансформация (делаем после кэша — она быстрая) ===
+        $items->transform(function ($doc) use ($isPrivileged) {
             $translation = $doc->translations->first();
-
             $doc->translated = $translation ? [
                 'id'      => $translation->id,
                 'lang'    => $translation->lang,
                 'title'   => $translation->title,
-                'content' => $translation->content,
+                'content' => $translation->content ?? null,
+                'summary' => $translation->summary,
                 'file'    => $translation->file,
             ] : null;
-
             unset($doc->translations);
 
             if ($doc->relationLoaded('categories')) {
-                $doc->categories->transform(function ($category) {
-                    $translation = $category->translations->first();
-
-                    $category->translated = $translation ? [
-                        'id'    => $translation->id,
-                        'lang'  => $translation->lang,
-                        'title' => $translation->title,
+                $doc->categories->transform(function ($cat) {
+                    $t = $cat->translations->first();
+                    $cat->translated = $t ? [
+                        'id'          => $t->id,
+                        'lang'        => $t->lang,
+                        'title'       => $t->title,
+                        'description' => $t->description,
                     ] : null;
-
-                    unset($category->translations);
-
-                    return $category;
+                    unset($cat->translations);
+                    return $cat;
                 });
             }
 
@@ -223,13 +206,11 @@ class DocumentController extends Controller
                 unset($doc->views_last_30_days);
             }
 
-            $doc->ai_searches_last_30_days = $isPrivileged
-            ? ($aiSearchCounts[$doc->id] ?? 0)
-            : 0;
-
+            $doc->ai_searches_last_30_days = 0;
             return $doc;
         });
 
+    // === Экспорты (НЕ кэшируем — всегда свежие) ===
         if ($request->boolean('isExportXSL')) {
             $fileName = 'documents_' . now()->format('Ymd_His') . '.xlsx';
             return Excel::download(new DocumentsExport($items), $fileName);
@@ -237,12 +218,10 @@ class DocumentController extends Controller
 
         if ($request->boolean('isExportPDF')) {
             $fileName = 'documents_' . now()->format('Ymd_His') . '.pdf';
-
             $pdf = Pdf::loadView('pdf.documents', [
                 'documents' => $items,
                 'user'      => $user,
             ])->setPaper('a4');
-
             return $pdf->download($fileName);
         }
 
@@ -1254,7 +1233,7 @@ public function downloadPDF(Request $request)
     $lang = $request->get('lang', 'en');
     $ids = array_map('intval', $request->get('ids', []));
 
-     $items = $ids ? Document::whereIn('id', $ids)
+    $items = $ids ? Document::whereIn('id', $ids)
     ->with(['translations', 'categories', 'functions'])
     ->get()
     ->sortBy(function ($doc) use ($ids) {

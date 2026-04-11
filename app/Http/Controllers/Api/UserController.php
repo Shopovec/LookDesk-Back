@@ -707,7 +707,7 @@ public function downloadXsl(Request $request)
     $ids = array_map('intval', $request->get('ids', []));
 
     if ($ids) {
-        \ $users = User::withCount([
+         $users = User::withCount([
         'documents as documents_count',
         'sessions as sessions_chat_count',
         'documentsTeam as documents_team_count',
@@ -830,7 +830,7 @@ public function downloadListPDF(Request $request)
     $ids = array_map('intval', $request->get('ids', []));
 
     if ($ids) {
-        \ $users = User::withCount([
+         $users = User::withCount([
         'documents as documents_count',
         'sessions as sessions_chat_count',
         'documentsTeam as documents_team_count',
