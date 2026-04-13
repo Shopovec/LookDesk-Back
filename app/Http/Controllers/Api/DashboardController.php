@@ -45,8 +45,8 @@ class DashboardController extends Controller
     /* ============================================================
      | DASHBOARD MAIN - ОПТИМИЗИРОВАННЫЙ
      ============================================================ */
-    public function index(Request $request)
-    {
+     public function index(Request $request)
+     {
         $user = auth()->user();
 
         if (!$user || $user->hasRole('user') || $user->hasRole('editor') || $user->hasRole('accountant')) {
@@ -107,49 +107,46 @@ class DashboardController extends Controller
       /* ============================================================
      | TOP SEARCH DOCUMENTS (оставил почти как было, но с eager loading)
      ============================================================ */
-    public function top_search_documents(Request $request)
-    {
-        $cacheKey = 'dashboard.top_search_documents';
+     public function top_search_documents(Request $request)
+     {
+        $cacheKey = 'dashboard.top_search_documents__';
 
         return Cache::remember($cacheKey, now()->addMinutes(5), function () {
-            $stats = DB::select("
-                SELECT d.id as doc_id, COUNT(*) as total
-                FROM (
-                    SELECT JSON_EXTRACT(meta, '$.picked_ids[0]') as doc_id
-                    FROM chat_messages WHERE role = 'assistant'
-                    UNION ALL
-                    SELECT JSON_EXTRACT(meta, '$.picked_ids[1]') as doc_id
-                    FROM chat_messages WHERE role = 'assistant'
-                ) t
-                JOIN documents d ON d.id = t.doc_id
-                WHERE t.doc_id IS NOT NULL
-                GROUP BY d.id
-                ORDER BY total DESC
-                LIMIT 3;
-            ");
+         $stats = DB::select("
+          SELECT d.id as doc_id, COUNT(*) as total
+          FROM (
+            SELECT JSON_EXTRACT(meta, '$.picked_ids[0]') as doc_id
+            FROM chat_messages
+            WHERE role = 'assistant'
 
-            $stats = collect($stats);
+            UNION ALL
 
-            if ($stats->isEmpty()) {
-                return [];
-            }
+            SELECT JSON_EXTRACT(meta, '$.picked_ids[1]') as doc_id
+            FROM chat_messages
+            WHERE role = 'assistant'
+            ) t
+          JOIN documents d ON d.id = t.doc_id
+          WHERE t.doc_id IS NOT NULL
+          GROUP BY d.id
+          ORDER BY total DESC
+          LIMIT 3;
+          ");
 
-            $documents = Document::with([
-                'translations' => fn($q) => $q->select('id', 'document_id', 'lang', 'title'),
-                'categories:id',
-                'functions:id'
-            ])
-            ->whereIn('id', $stats->pluck('doc_id'))
-            ->get();
+         $stats = collect($stats);
 
-            $documents->transform(function ($doc) use ($stats) {
-                $stat = $stats->firstWhere('doc_id', $doc->id);
-                $doc->total = $stat->total ?? 0;
-                return $doc;
-            });
 
-            return $documents;
+         $documents = Document::with(['translations','categories','functions'])->whereIn('id', $stats->pluck('doc_id'))->get();
+         $documents = $documents->transform(function ($doc) use ($stats) {
+
+            $stat = $stats->firstWhere('doc_id', $doc->id);
+
+            $doc->total = $stat->total ?? 0;
+
+            return $doc;
         });
+
+         return $documents;
+     });
     }
 
 
@@ -157,35 +154,35 @@ class DashboardController extends Controller
      | PRIVATE HELPERS (оптимизированные)
      ============================================================ */
 
-    private function topAiQueries()
-    {
+     private function topAiQueries()
+     {
         return ChatMessage::selectRaw('content, COUNT(*) as total')
-            ->where('role', 'user')
-            ->groupBy('content')
-            ->orderByDesc('total')
-            ->limit(5)
-            ->get();
+        ->where('role', 'user')
+        ->groupBy('content')
+        ->orderByDesc('total')
+        ->limit(5)
+        ->get();
     }
 
     private function activeUsersLast30Days(): int
     {
         return ChatSession::where('created_at', '>=', now()->subDays(30))
-            ->distinct('user_id')
-            ->count('user_id');
+        ->distinct('user_id')
+        ->count('user_id');
     }
 
     private function trashedUsersLast30Days(): int
     {
         return User::onlyTrashed()
-            ->where('created_at', '>=', now()->subDays(30))
-            ->count();
+        ->where('created_at', '>=', now()->subDays(30))
+        ->count();
     }
 
-   private function searchesToday(): int
+    private function searchesToday(): int
     {
         return ChatMessage::where('role', 'user')
-            ->whereDate('created_at', today())
-            ->count();
+        ->whereDate('created_at', today())
+        ->count();
     }
 
     private function csatOverall(): float
@@ -196,9 +193,9 @@ class DashboardController extends Controller
         if ($totalSessions === 0) return 0;
 
         $positiveSessions = ChatSession::where('created_at', '>=', $fromDate)
-            ->whereHas('messages.feedback', fn($q) => $q->where('is_useful', true))
-            ->distinct()
-            ->count();
+        ->whereHas('messages.feedback', fn($q) => $q->where('is_useful', true))
+        ->distinct()
+        ->count();
 
         return round(($positiveSessions / $totalSessions) * 100, 1);
     }
@@ -209,8 +206,8 @@ class DashboardController extends Controller
         if ($totalSessions === 0) return 0;
 
         $positiveSessions = ChatSession::whereHas('messages.feedback', fn($q) => $q->where('is_useful', true))
-            ->distinct()
-            ->count();
+        ->distinct()
+        ->count();
 
         return round(($positiveSessions / $totalSessions) * 100, 1);
     }
@@ -218,16 +215,16 @@ class DashboardController extends Controller
     private function mostViewedDocument($lang = 'en')
     {
         $document = Document::query()
-            ->select('id')
-            ->with([
-                'translations' => fn($q) => $q->where('lang', $lang)
-                    ->select('id', 'document_id', 'lang', 'title', 'summary'),
-            ])
-            ->withCount([
-                'views as views_last_30_days' => fn($q) => $q->where('created_at', '>=', now()->subDays(30))
-            ])
-            ->orderByDesc('views_last_30_days')
-            ->first();
+        ->select('id')
+        ->with([
+            'translations' => fn($q) => $q->where('lang', $lang)
+            ->select('id', 'document_id', 'lang', 'title', 'summary'),
+        ])
+        ->withCount([
+            'views as views_last_30_days' => fn($q) => $q->where('created_at', '>=', now()->subDays(30))
+        ])
+        ->orderByDesc('views_last_30_days')
+        ->first();
 
         if (!$document) return null;
 
@@ -246,37 +243,37 @@ class DashboardController extends Controller
     private function latestDocuments($lang = 'en')
     {
         return Document::query()
-            ->select('id', 'created_at')
-            ->with([
-                'translations' => fn($q) => $q->where('lang', $lang)
-                    ->select('id', 'document_id', 'lang', 'title', 'file', 'content', 'summary'),
-                'categories:id',
-                'functions:id',
-            ])
-            ->orderByDesc('id')
-            ->limit(10)
-            ->get()
-            ->map(function ($doc) {
-                $translation = $doc->translations->first();
-                $doc->translated = $translation ? [
-                    'id'      => $translation->id,
-                    'lang'    => $translation->lang,
-                    'title'   => $translation->title,
-                    'content' => $translation->content,
-                    'summary' => $translation->summary,
-                    'file'    => $translation->file,
-                ] : null;
-                unset($doc->translations);
-                return $doc;
-            });
+        ->select('id', 'created_at')
+        ->with([
+            'translations' => fn($q) => $q->where('lang', $lang)
+            ->select('id', 'document_id', 'lang', 'title', 'file', 'content', 'summary'),
+            'categories:id',
+            'functions:id',
+        ])
+        ->orderByDesc('id')
+        ->limit(10)
+        ->get()
+        ->map(function ($doc) {
+            $translation = $doc->translations->first();
+            $doc->translated = $translation ? [
+                'id'      => $translation->id,
+                'lang'    => $translation->lang,
+                'title'   => $translation->title,
+                'content' => $translation->content,
+                'summary' => $translation->summary,
+                'file'    => $translation->file,
+            ] : null;
+            unset($doc->translations);
+            return $doc;
+        });
     }
 
     private function latestOcr(User $user)
     {
         return OcrScan::where('user_id', $user->id)
-            ->orderByDesc('id')
-            ->limit(10)
-            ->get();
+        ->orderByDesc('id')
+        ->limit(10)
+        ->get();
     }
 
     private function documentsGraph()
@@ -285,10 +282,10 @@ class DashboardController extends Controller
         $to   = now()->endOfDay();
 
         $rows = Document::query()
-            ->selectRaw('DATE(created_at) as date, COUNT(*) as count')
-            ->whereBetween('created_at', [$from, $to])
-            ->groupBy(DB::raw('DATE(created_at)'))
-            ->pluck('count', 'date');
+        ->selectRaw('DATE(created_at) as date, COUNT(*) as count')
+        ->whereBetween('created_at', [$from, $to])
+        ->groupBy(DB::raw('DATE(created_at)'))
+        ->pluck('count', 'date');
 
         $days = [];
         for ($i = 29; $i >= 0; $i--) {
@@ -305,8 +302,8 @@ class DashboardController extends Controller
     private function categoriesUsage()
     {
         return Category::withCount('documents')
-            ->orderByDesc('documents_count')
-            ->get();
+        ->orderByDesc('documents_count')
+        ->get();
     }
 
     private function aiEconomics($user = null): array
