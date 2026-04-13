@@ -11,12 +11,18 @@ use Maatwebsite\Excel\Concerns\ShouldAutoSize;
 
 class AiChatSessionExport implements FromCollection, WithHeadings, WithMapping, ShouldAutoSize
 {
-    public function __construct(private ChatSession $session) {}
+    public function __construct(private Collection $sessions) {}
 
     public function collection(): Collection
     {
-        // сортируем по id/created_at на всякий
-        return $this->session->messages->sortBy('id')->values();
+        return $this->sessions
+            ->flatMap(fn ($session) =>
+                $session->messages->map(fn ($msg) => [
+                    'session' => $session,
+                    'msg' => $msg
+                ])
+            )
+            ->values();
     }
 
     public function headings(): array
@@ -34,12 +40,15 @@ class AiChatSessionExport implements FromCollection, WithHeadings, WithMapping, 
         ];
     }
 
-    public function map($msg): array
+    public function map($row): array
     {
+        $session = $row['session'];
+        $msg = $row['msg'];
+
         return [
-            $this->session->id,
-            $this->session->search_query?->query,
-            $this->session->search_query?->lang,
+            $session->id,
+            $session->search_query?->query,
+            $session->search_query?->lang,
             $msg->id,
             $msg->role,
             $msg->content,

@@ -62,60 +62,56 @@ class AiChatController extends Controller
     }
 
     #[OA\Get(
-    path: "/api/ai/sessions/{id}/export/excel",
+    path: "/api/ai/sessions/export/excel",
     summary: "Export AI chat session to Excel (.xlsx)",
     tags: ["AI Chat"],
     security: [["sanctum" => []]],
     parameters: [
-        new OA\Parameter(name: "id", in: "path", required: true, schema: new OA\Schema(type: "integer")),
     ],
     responses: [
         new OA\Response(response: 200, description: "XLSX file"),
         new OA\Response(response: 404, description: "Not found"),
     ]
 )]
-    public function exportExcel($id): BinaryFileResponse
+    public function exportExcel(): BinaryFileResponse
     {
-        $session = ChatSession::where('user_id', auth()->id())
-        ->with(['search_query', 'messages.feedback'])
-        ->find($id);
+        $sessions = ChatSession::where('user_id', auth()->id())
+        ->with(['search_query', 'messages.feedback']);
 
-        if (!$session) {
+        if (!$sessions) {
             abort(404, 'Not found');
         }
 
-        $fileName = 'ai_session_' . $session->id . '_' . now()->format('Ymd_His') . '.xlsx';
+        $fileName = 'ai_session_' . now()->format('Ymd_His') . '.xlsx';
 
-        return Excel::download(new AiChatSessionExport($session), $fileName);
+        return Excel::download(new AiChatSessionExport($sessions->get(),), $fileName);
     }
 
 #[OA\Get(
-    path: "/api/ai/sessions/{id}/export/pdf",
+    path: "/api/ai/sessions/export/pdf",
     summary: "Export AI chat session to PDF",
     tags: ["AI Chat"],
     security: [["sanctum" => []]],
     parameters: [
-        new OA\Parameter(name: "id", in: "path", required: true, schema: new OA\Schema(type: "integer")),
     ],
     responses: [
         new OA\Response(response: 200, description: "PDF file"),
         new OA\Response(response: 404, description: "Not found"),
     ]
 )]
-public function exportPdf($id)
+public function exportPdf()
 {
-    $session = ChatSession::where('user_id', auth()->id())
-    ->with(['search_query', 'messages.feedback'])
-    ->find($id);
+    $sessions = ChatSession::where('user_id', auth()->id())
+    ->with(['search_query', 'messages.feedback']);
 
-    if (!$session) {
+    if (!$sessions) {
         return response()->json(['message' => 'Not found'], 404);
     }
 
-    $fileName = 'ai_session_' . $session->id . '_' . now()->format('Ymd_His') . '.pdf';
+    $fileName = 'ai_session_' . now()->format('Ymd_His') . '.pdf';
 
     $pdf = Pdf::loadView('pdf.ai-session', [
-        'session' => $session,
+        'sessions' => $sessions->get(),
         'user' => auth()->user(),
     ])->setPaper('a4');
 

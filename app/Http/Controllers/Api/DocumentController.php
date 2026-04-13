@@ -1115,18 +1115,6 @@ tags: ["Documents"],
 security: [["sanctum" => []]],
 parameters: [
     new OA\Parameter(
-        name: "ids",
-        in: "query",
-        description: "Document IDs",
-        required: true,
-        style: "form",
-        explode: true,
-        schema: new OA\Schema(
-            type: "array",
-            items: new OA\Items(type: "integer")
-        )
-    ),
-    new OA\Parameter(
         name: "lang",
         in: "query",
         schema: new OA\Schema(type: "string", default: "en")
@@ -1189,22 +1177,10 @@ public function downloadXsl(Request $request)
 ====================================================== */
 #[OA\Get(
 path: "/api/documents/download/pdf",
-summary: "Download documents list as PDF by ids",
+summary: "Download documents list as PDF",
 tags: ["Documents"],
 security: [["sanctum" => []]],
 parameters: [
-    new OA\Parameter(
-        name: "ids",
-        in: "query",
-        description: "Document IDs",
-        required: true,
-        style: "form",
-        explode: true,
-        schema: new OA\Schema(
-            type: "array",
-            items: new OA\Items(type: "integer")
-        )
-    ),
     new OA\Parameter(
         name: "lang",
         in: "query",

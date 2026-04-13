@@ -2,7 +2,6 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>AI Session #{{ $session->id }}</title>
     <style>
         body { font-family: DejaVu Sans, sans-serif; font-size: 12px; color: #111; }
         .h1 { font-size: 18px; font-weight: 700; margin-bottom: 6px; }
@@ -15,7 +14,9 @@
     </style>
 </head>
 <body>
-    <div class="h1">AI Chat Session #{{ $session->id }}</div>
+    @foreach($sessions as $session)
+    <div class="h1">Session #{{ $session->id }}</div>
+
 
     <div class="meta muted">
         User: {{ $user->email ?? ('ID ' . $user->id) }}<br>
@@ -23,6 +24,7 @@
         Lang: {{ $session->search_query?->lang }}<br>
         Created: {{ optional($session->created_at)->toDateTimeString() }}
     </div>
+
 
     @foreach($session->messages->sortBy('id') as $m)
         <div class="msg">
@@ -38,6 +40,9 @@
                 </div>
             @endif
         </div>
+    @endforeach
+
+    <hr>
     @endforeach
 </body>
 </html>

@@ -47,8 +47,8 @@ Route::prefix('owner-change')->middleware(['auth:sanctum', 'update_last_seen'])-
 Route::middleware(['auth:sanctum', 'update_last_seen'])->group(function () {
     Route::put('/ai/sessions/{id}/favorite', [AiChatController::class, 'favoriteSearch'])
     ->middleware(['auth:sanctum', 'update_last_seen']);
-    Route::get('/ai/sessions/{id}/export/excel', [AiChatController::class, 'exportExcel']);
-    Route::get('/ai/sessions/{id}/export/pdf',   [AiChatController::class, 'exportPdf']);
+    Route::get('/ai/sessions/export/excel', [AiChatController::class, 'exportExcel']);
+    Route::get('/ai/sessions/export/pdf',   [AiChatController::class, 'exportPdf']);
     Route::post('ai/search', [AiChatController::class, 'search']);
     Route::get('ai/sessions', [AiChatController::class, 'sessions']);
     Route::get('ai/sessions/{id}', [AiChatController::class, 'showSession']);
